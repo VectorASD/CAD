@@ -3,6 +3,7 @@
 #include "scalar.hpp"
 
 #include <numeric>
+#include <ostream>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -83,5 +84,10 @@ public:
 
 static_assert(Scalar<Fraction<int>>);
 static_assert(Scalar<Fraction<long long>>);
+
+template<Scalar S>
+std::ostream& operator<<(std::ostream& os, const Fraction<S>& f) {
+    return os << f.num() << '/' << f.den();
+}
 
 } // namespace geom

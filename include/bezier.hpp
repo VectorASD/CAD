@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstddef>
+#include <ostream>
 #include <vector>
 
 
@@ -36,6 +37,17 @@ Vec3<S> bezier(const std::array<Vec3<S>, D + 1>& P, const S& t) {
         for (std::size_t i = 0; i + k <= D; ++i)
             Q[i] = Q[i] * u + Q[i+1] * t;
     return Q[0];
+}
+
+
+template<Scalar S, std::size_t N>
+std::ostream& operator<<(std::ostream& os, const std::array<Vec3<S>, N>& P) {
+    os << '[';
+    for (std::size_t i = 0; i < N; ++i) {
+        if (i) os << ", ";
+        os << P[i];
+    }
+    return os << ']';
 }
 
 } // namespace geom

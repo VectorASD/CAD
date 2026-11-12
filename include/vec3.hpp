@@ -3,6 +3,7 @@
 #include "scalar.hpp"
 
 #include <cmath>
+#include <ostream>
 
 
 namespace geom {
@@ -42,6 +43,12 @@ struct Vec3 {
     }
     friend bool operator==(const Vec3& a, const Vec3& b) = default;
 };
+
+template<Scalar S>
+std::ostream& operator<<(std::ostream& os, const Vec3<S>& v) {
+    return os << '(' << v.x << ", " << v.y << ", " << v.z << ')';
+}
+
 
 // Approximate length. Kept free (not a Vec3 member) because:
 //   - Vec3 is pure algebra (field ops, any Scalar); length needs sqrt,
