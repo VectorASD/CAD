@@ -8,6 +8,12 @@ INCLUDE="$SCRIPT_DIR/include"
 OBJ="$SCRIPT_DIR/obj"
 OUTPUT="$SCRIPT_DIR/fraction_test.o"
 
+if grep -rnP '[^\x00-\x7F]' "$SRC" "$INCLUDE" "$0" >/dev/null 2>&1; then
+    echo "Non-ASCII characters found:" >&2
+    grep -rnP '[^\x00-\x7F]' "$SRC" "$INCLUDE" "$0" >&2
+    exit 1
+fi
+
 # --- Compiler ---
 
 # Find the best clang++ available:
@@ -66,7 +72,6 @@ if ! CXX_BIN=$(find_clangxx); then
     echo "Install LLVM, e.g.: pkg install llvm" >&2
     exit 1
 fi
-echo "Using compiler: ${CC[*]}"
 
 # Prefer ccache if available; otherwise, tell the user how to install it.
 if command -v ccache >/dev/null 2>&1; then
@@ -81,6 +86,7 @@ else
         echo "No known package manager found. Install ccache manually." >&2
     fi
 fi
+echo "Using compiler: ${CC[*]}"
 
 # --- Flags ---
 

@@ -26,4 +26,11 @@ concept Scalar = std::regular<S> &&
         S(1);
     };
 
+// A Scalar that can be explicitly converted to double.
+// Used for approximate, non-exact operations (length, rendering, tessellation).
+template<typename S>
+concept DoubleConvertible = Scalar<S> && requires(const S& s) {
+    static_cast<double>(s);
+};
+
 } // namespace geom
