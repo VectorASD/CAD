@@ -6,11 +6,21 @@ SCRIPT_DIR="$(dirname "$(realpath "$0")")"
 SRC="$SCRIPT_DIR/src"
 INCLUDE="$SCRIPT_DIR/include"
 OBJ="$SCRIPT_DIR/obj"
-OUTPUT="$SCRIPT_DIR/fraction_test.o"
+PYTHON_DIR="$SCRIPT_DIR/python"
 
-if grep -rnP '[^\x00-\x7F]' "$SRC" "$INCLUDE" "$0" >/dev/null 2>&1; then
+CHECK_TARGETS=("$SRC" "$INCLUDE" "$PYTHON_DIR" "$0")
+
+# Check for non-ASCII characters
+if grep -rnP '[^\x00-\x7F]' "${CHECK_TARGETS[@]}" >/dev/null 2>&1; then
     echo "Non-ASCII characters found:" >&2
-    grep -rnP '[^\x00-\x7F]' "$SRC" "$INCLUDE" "$0" >&2
+    grep -rnP '[^\x00-\x7F]' "${CHECK_TARGETS[@]}" >&2
+    exit 1
+fi
+
+# Check for trailing whitespaces (spaces or tabs at the end of lines)
+if grep -rnP '[ \t]+$' "${CHECK_TARGETS[@]}" >/dev/null 2>&1; then
+    echo "Trailing whitespaces found:" >&2
+    grep -rnP '[ \t]+$' "${CHECK_TARGETS[@]}" >&2
     exit 1
 fi
 
@@ -73,11 +83,18 @@ if ! CXX_BIN=$(find_clangxx); then
     exit 1
 fi
 
+C_BIN="${CXX_BIN//++/}"  # clang++-23 -> clang-23
+if ! command -v "$C_BIN" >/dev/null 2>&1; then
+    C_BIN="cc"
+fi
+
 # Prefer ccache if available; otherwise, tell the user how to install it.
 if command -v ccache >/dev/null 2>&1; then
     CC=("ccache" "$CXX_BIN")
+    CC_C=("ccache" "$C_BIN")
 else
     CC=("$CXX_BIN")
+    CC_C=("$C_BIN")
     echo "ccache is not installed. Compilation will proceed without it." >&2
 
     if install_cmd=$(detect_ccache_install_cmd); then
@@ -119,8 +136,7 @@ compile() {
         -c "$SRC/$name.cpp"
 }
 
-# --- Build ---
-
+# --- Build Stage 1: Compile all translation units ---
 shopt -s nullglob
 src_files=("$SRC"/*.cpp)
 shopt -u nullglob
@@ -134,12 +150,44 @@ for src_file in "${src_files[@]}"; do
     compile "$(basename "$src_file" .cpp)"
 done
 
-echo "  LD   $(basename "$OUTPUT")"
-"${CC[@]}" -o "$OUTPUT" "$OBJ"/*.o "${LDFLAGS[@]}"
+if [ -f "$SRC/glad.c" ]; then
+    echo "  CC   glad.c"
+    "${CC_C[@]}" -I"$INCLUDE" -O3 -g -Wall \
+        -c "$SRC/glad.c" -o "$OBJ/glad.o"
+fi
 
-# Strip debug symbols from the shipped binary
-strip "$OUTPUT" -o "$OUTPUT.stripped"
-mv "$OUTPUT.stripped" "$OUTPUT"
+# --- Build Stage 2: Link tests ---
+test_objs=()
+for obj in "$OBJ"/*.o; do
+    if [[ "$obj" != *"server.o" ]]; then
+        test_objs+=("$obj")
+    fi
+done
 
-echo "  RUN  $(basename "$OUTPUT")"
-"$OUTPUT"
+if [ ${#test_objs[@]} -gt 0 ]; then
+    echo "  LD   geom_tests"
+    "${CC[@]}" -o "$SCRIPT_DIR/geom_tests" "${test_objs[@]}"
+
+    echo "  STRIP geom_tests"
+    strip "$SCRIPT_DIR/geom_tests" -o "$SCRIPT_DIR/geom_tests.stripped"
+    mv "$SCRIPT_DIR/geom_tests.stripped" "$SCRIPT_DIR/geom_tests"
+
+    echo "  RUN  geom_tests"
+    "$SCRIPT_DIR/geom_tests"
+    echo ""
+fi
+
+# --- Build Stage 3: Link server ---
+if [ -f "$OBJ/server.o" ]; then
+    echo "  LD   graphics_server"
+    "${CC[@]}" -o "$SCRIPT_DIR/graphics_server" "$OBJ/server.o" "$OBJ/glad.o" \
+        -lOSMesa \
+        -lavcodec -lavutil -lswscale \
+        -lpthread
+
+    echo "  STRIP graphics_server"
+    strip "$SCRIPT_DIR/graphics_server" -o "$SCRIPT_DIR/graphics_server.stripped"
+    mv "$SCRIPT_DIR/graphics_server.stripped" "$SCRIPT_DIR/graphics_server"
+
+    echo "  DONE graphics_server built successfully."
+fi

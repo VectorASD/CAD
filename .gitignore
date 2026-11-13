@@ -1,2 +1,4 @@
 *.d
 *.o
+geom_tests
+graphics_server
