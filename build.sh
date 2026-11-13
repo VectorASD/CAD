@@ -125,10 +125,11 @@ LDFLAGS=()
 
 mkdir -p "$OBJ"
 
-# Compile a single translation unit into $OBJ.
-# Usage: compile <basename>  (expects $SRC/<basename>.cpp)
+# Compile a single translation unit.
+# Usage: compile <path under $SRC, no .cpp>
 compile() {
     local name="$1"
+    mkdir -p "$(dirname "$OBJ/$name")"
     echo "  CXX  $name.cpp"
     "${CC[@]}" "${CFLAGS[@]}" \
        -MF "$OBJ/$name.d" \
@@ -136,58 +137,42 @@ compile() {
         -c "$SRC/$name.cpp"
 }
 
-# --- Build Stage 1: Compile all translation units ---
-shopt -s nullglob
-src_files=("$SRC"/*.cpp)
-shopt -u nullglob
+# --- Build: geom_tests ---
 
-if [ ${#src_files[@]} -eq 0 ]; then
-    echo "No .cpp files found in $SRC" >&2
-    exit 1
-fi
+compile main
+compile tests
 
-for src_file in "${src_files[@]}"; do
-    compile "$(basename "$src_file" .cpp)"
-done
+echo "  LD   geom_tests"
+"${CC[@]}" -o "$SCRIPT_DIR/geom_tests" \
+    "$OBJ/main.o" "$OBJ/tests.o"
 
-if [ -f "$SRC/glad.c" ]; then
-    echo "  CC   glad.c"
-    "${CC_C[@]}" -I"$INCLUDE" -O3 -g -Wall \
-        -c "$SRC/glad.c" -o "$OBJ/glad.o"
-fi
+echo "  STRIP geom_tests"
+strip "$SCRIPT_DIR/geom_tests" -o "$SCRIPT_DIR/geom_tests.stripped"
+mv "$SCRIPT_DIR/geom_tests.stripped" "$SCRIPT_DIR/geom_tests"
 
-# --- Build Stage 2: Link tests ---
-test_objs=()
-for obj in "$OBJ"/*.o; do
-    if [[ "$obj" != *"server.o" ]]; then
-        test_objs+=("$obj")
-    fi
-done
+echo "  RUN  geom_tests"
+"$SCRIPT_DIR/geom_tests"
+echo ""
 
-if [ ${#test_objs[@]} -gt 0 ]; then
-    echo "  LD   geom_tests"
-    "${CC[@]}" -o "$SCRIPT_DIR/geom_tests" "${test_objs[@]}"
+# --- Build: graphics_server ---
 
-    echo "  STRIP geom_tests"
-    strip "$SCRIPT_DIR/geom_tests" -o "$SCRIPT_DIR/geom_tests.stripped"
-    mv "$SCRIPT_DIR/geom_tests.stripped" "$SCRIPT_DIR/geom_tests"
+compile server
+compile render/render
+compile render/stream
 
-    echo "  RUN  geom_tests"
-    "$SCRIPT_DIR/geom_tests"
-    echo ""
-fi
+echo "  CC   render/glad.c"
+"${CC_C[@]}" -I"$INCLUDE" -O3 -g -Wall \
+    -c "$SRC/render/glad.c" -o "$OBJ/render/glad.o"
 
-# --- Build Stage 3: Link server ---
-if [ -f "$OBJ/server.o" ]; then
-    echo "  LD   graphics_server"
-    "${CC[@]}" -o "$SCRIPT_DIR/graphics_server" "$OBJ/server.o" "$OBJ/glad.o" \
-        -lOSMesa \
-        -lavcodec -lavutil -lswscale \
-        -lpthread
+echo "  LD   graphics_server"
+"${CC[@]}" -o "$SCRIPT_DIR/graphics_server" \
+    "$OBJ/server.o" \
+    "$OBJ/render/render.o" \
+    "$OBJ/render/stream.o" \
+    "$OBJ/render/glad.o" \
+    -lOSMesa -lavcodec -lavutil -lswscale -lpthread
 
-    echo "  STRIP graphics_server"
-    strip "$SCRIPT_DIR/graphics_server" -o "$SCRIPT_DIR/graphics_server.stripped"
-    mv "$SCRIPT_DIR/graphics_server.stripped" "$SCRIPT_DIR/graphics_server"
-
-    echo "  DONE graphics_server built successfully."
-fi
+echo "  STRIP graphics_server"
+strip "$SCRIPT_DIR/graphics_server" -o "$SCRIPT_DIR/graphics_server.stripped"
+mv "$SCRIPT_DIR/graphics_server.stripped" "$SCRIPT_DIR/graphics_server"
+echo "  DONE graphics_server built successfully."

@@ -97,8 +97,8 @@ def control_sender():
         # If we are here, we are connected
         try:
             # Get mouse data from queue (blocks up to 0.1s)
-            dx, dy = mouse_queue.get(timeout=0.1)
-            control_socket.sendall(struct.pack('<ff', float(dx), float(dy)))
+            ev_type, x, y = mouse_queue.get(timeout=0.1)
+            control_socket.sendall(struct.pack('>Bii', ev_type, x, y))
         except queue.Empty:
             pass
         except (ConnectionResetError, BrokenPipeError, OSError):
@@ -109,27 +109,24 @@ def control_sender():
                 control_socket = None
 
 # Mouse state
-is_dragging = False
-last_x, last_y = 0, 0
+EV_DOWN = 0
+EV_MOVE = 1
+EV_UP   = 2
 
 def on_mouse(event, x, y, flags, param):
-    global is_dragging, last_x, last_y
-
+    ev = None
     if event == cv2.EVENT_LBUTTONDOWN:
-        is_dragging = True
-        last_x, last_y = x, y
-    elif event == cv2.EVENT_MOUSEMOVE and is_dragging:
-        dx = x - last_x
-        dy = y - last_y
-        last_x, last_y = x, y
-
-        # Push to queue instead of sending directly (non-blocking UI)
-        try:
-            mouse_queue.put_nowait((dx, dy))
-        except queue.Full:
-            pass
+        ev = EV_DOWN
+    elif event == cv2.EVENT_MOUSEMOVE:
+        ev = EV_MOVE
     elif event == cv2.EVENT_LBUTTONUP:
-        is_dragging = False
+        ev = EV_UP
+    if ev is None:
+        return
+    try:
+        mouse_queue.put_nowait((ev, int(x), int(y)))
+    except queue.Full:
+        pass
 
 def main():
     global latest_frame, running

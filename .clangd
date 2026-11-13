@@ -1,0 +1,5 @@
+CompileFlags:
+  Add:
+    - -I/home/vectorasd/CAD/include
+    - -std=c++20
+    - -DNDEBUG
