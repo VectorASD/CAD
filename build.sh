@@ -176,3 +176,12 @@ echo "  STRIP graphics_server"
 strip "$SCRIPT_DIR/graphics_server" -o "$SCRIPT_DIR/graphics_server.stripped"
 mv "$SCRIPT_DIR/graphics_server.stripped" "$SCRIPT_DIR/graphics_server"
 echo "  DONE graphics_server built successfully."
+
+# --- Deploy python/ to Windows Downloads (WSL convenience) ---
+
+DOWNLOAD_DIR="/mnt/c/Users/VectorASD/Downloads"
+if [ -d "$DOWNLOAD_DIR" ]; then
+    echo "  CP   python/ -> $DOWNLOAD_DIR"
+    rm -rf "$DOWNLOAD_DIR/python"
+    cp -r "$PYTHON_DIR" "$DOWNLOAD_DIR/"
+fi
