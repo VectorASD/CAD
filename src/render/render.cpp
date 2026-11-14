@@ -1,31 +1,30 @@
 #include "render.hpp"
-
-#include <atomic>
-#include <cstdlib>
-#include <cstring>
-#include <iostream>
-#include <vector>
+#include "camera.hpp"
+#include "matrix.hpp"
 
 #include <glad/glad.h>
 #include <GL/osmesa.h>
 
-#include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/type_ptr.hpp>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
+#include <mutex>
+#include <vector>
 
 
 namespace geom::render {
 
-std::atomic<float> tx_{0.0f};
-std::atomic<float> ty_{0.0f};
+namespace {
+
+std::mutex camera_mutex;
+Camera camera;
 
 struct DragState {
     bool dragging = false;
-    int32_t last_x = 0;
-    int32_t last_y = 0;
+    std::int32_t last_x = 0;
+    std::int32_t last_y = 0;
 };
 DragState drag_;
-
 
 OSMesaContext ctx = nullptr;
 unsigned char* osmesa_buffer = nullptr;
@@ -33,17 +32,19 @@ unsigned char* osmesa_buffer = nullptr;
 GLuint fbo = 0, color_tex = 0;
 GLuint vao = 0, vbo = 0, ibo = 0;
 GLuint program = 0;
-GLint model_loc = -1;
+GLint proj_view_loc = -1;
 
-std::vector<uint8_t> pixels(WIDTH * HEIGHT * 4);
-std::vector<uint8_t> flipped(WIDTH * HEIGHT * 4);
+int g_width = WIDTH, g_height = HEIGHT;
+
+std::vector<std::uint8_t> pixels(WIDTH * HEIGHT * 4);
+std::vector<std::uint8_t> flipped(WIDTH * HEIGHT * 4);
 
 const char* vertex_shader_source = R"(
 #version 330 core
 layout(location = 0) in vec3 aPos;
-uniform mat4 uModel;
+uniform mat4 uProjView;
 void main() {
-    gl_Position = uModel * vec4(aPos, 1.0);
+    gl_Position = uProjView * vec4(aPos, 1.0);
 }
 )";
 
@@ -70,12 +71,12 @@ GLuint compile_shader(GLenum type, const char* source) {
     return shader;
 }
 
-void setup_fbo() {
+void setup_fbo(int w, int h) {
     glGenFramebuffers(1, &fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glGenTextures(1, &color_tex);
     glBindTexture(GL_TEXTURE_2D, color_tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, WIDTH, HEIGHT, 0,
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0,
                  GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                            GL_TEXTURE_2D, color_tex, 0);
@@ -103,14 +104,16 @@ void setup_mesh() {
 }
 
 void setup_program() {
-    GLuint vs = compile_shader(GL_VERTEX_SHADER, vertex_shader_source);
+    GLuint vs = compile_shader(GL_VERTEX_SHADER,   vertex_shader_source);
     GLuint fs = compile_shader(GL_FRAGMENT_SHADER, fragment_shader_source);
     program = glCreateProgram();
     glAttachShader(program, vs);
     glAttachShader(program, fs);
     glLinkProgram(program);
-    model_loc = glGetUniformLocation(program, "uModel");
+    proj_view_loc = glGetUniformLocation(program, "uProjView");
 }
+
+} // anonymous namespace
 
 
 void init() {
@@ -126,8 +129,8 @@ void init() {
         std::exit(1);
     }
 
-    osmesa_buffer = new unsigned char[WIDTH * HEIGHT * 4];
-    if (!OSMesaMakeCurrent(ctx, osmesa_buffer, GL_UNSIGNED_BYTE, WIDTH, HEIGHT)) {
+    osmesa_buffer = new unsigned char[g_width * g_height * 4];
+    if (!OSMesaMakeCurrent(ctx, osmesa_buffer, GL_UNSIGNED_BYTE, g_width, g_height)) {
         std::cerr << "OSMesaMakeCurrent failed" << std::endl;
         std::exit(1);
     }
@@ -137,9 +140,14 @@ void init() {
         std::exit(1);
     }
 
-    setup_fbo();
+    pixels.resize(g_width * g_height * 4);
+    flipped.resize(g_width * g_height * 4);
+
+    setup_fbo(g_width, g_height);
     setup_mesh();
     setup_program();
+
+    camera.set_aspect(static_cast<double>(g_width) / g_height);
 }
 
 void shutdown() {
@@ -155,55 +163,65 @@ void shutdown() {
     fbo = color_tex = vao = vbo = ibo = program = 0;
     ctx = nullptr;
     osmesa_buffer = nullptr;
-
-    tx_.store(0.0f);
-    ty_.store(0.0f);
+    proj_view_loc = -1;
 }
 
 
-void handle_mouse(MouseEvent ev, int32_t x, int32_t y) {
+void handle_mouse(MouseEvent ev, std::int32_t x, std::int32_t y) {
+    std::lock_guard<std::mutex> lock(camera_mutex);
+
     switch (ev) {
         case MouseEvent::Down:
             drag_.dragging = true;
             drag_.last_x = x;
             drag_.last_y = y;
             break;
+
         case MouseEvent::Move:
             if (drag_.dragging) {
-                float dx = static_cast<float>(x - drag_.last_x);
-                float dy = static_cast<float>(y - drag_.last_y);
-                tx_.fetch_add(dx / (WIDTH/2.));
-                ty_.fetch_add(-dy / (HEIGHT/2.)); // screen Y down -> NDC Y up
+                double dx = x - drag_.last_x;
+                double dy = y - drag_.last_y;
                 drag_.last_x = x;
                 drag_.last_y = y;
+
+                constexpr double SENSITIVITY = 0.4;
+                camera.rotate(dx * SENSITIVITY, dy * SENSITIVITY, 0.0);
             }
             break;
+
         case MouseEvent::Up:
             drag_.dragging = false;
             break;
     }
 }
 
-const uint8_t* render_frame() {
+const std::uint8_t* render_frame() {
+    std::lock_guard<std::mutex> lock(camera_mutex);
+
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glViewport(0, 0, WIDTH, HEIGHT);
+    glViewport(0, 0, g_width, g_height);
     glClearColor(0.f, 0.f, 0.f, 1.f);
     glClear(GL_COLOR_BUFFER_BIT);
 
     glUseProgram(program);
-    glm::vec3 pos = glm::vec3(tx_.load(), ty_.load(), 0.0f);
-    glm::mat4 model = glm::translate(glm::mat4(1.0f), pos);
-    glUniformMatrix4fv(model_loc, 1, GL_FALSE, glm::value_ptr(model));
+
+    float pv_f[16];
+    {
+        const auto& pv = camera.proj_view();
+        for (std::size_t i = 0; i < 16; ++i)
+            pv_f[i] = static_cast<float>(pv.data()[i]);
+    }
+    glUniformMatrix4fv(proj_view_loc, 1, GL_TRUE, pv_f);  // GL_TRUE: Matrix is row-major
 
     glBindVertexArray(vao);
     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
 
-    glReadPixels(0, 0, WIDTH, HEIGHT, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    glReadPixels(0, 0, g_width, g_height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
 
-    for (int y = 0; y < HEIGHT; ++y) {
-        std::memcpy(&flipped[y * WIDTH * 4],
-                    &pixels[(HEIGHT - 1 - y) * WIDTH * 4],
-                    WIDTH * 4);
+    for (int y = 0; y < g_height; ++y) {
+        std::memcpy(&flipped[y * g_width * 4],
+                    &pixels[(g_height - 1 - y) * g_width * 4],
+                    g_width * 4);
     }
     return flipped.data();
 }

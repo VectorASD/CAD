@@ -10,10 +10,12 @@ PYTHON_DIR="$SCRIPT_DIR/python"
 
 CHECK_TARGETS=("$SRC" "$INCLUDE" "$PYTHON_DIR" "$0")
 
-# Check for non-ASCII characters
-if grep -rnP '[^\x00-\x7F]' "${CHECK_TARGETS[@]}" >/dev/null 2>&1; then
+# Check for non-ASCII characters (URLs on https:// lines are allowed)
+non_ascii=$(grep -rnP '[^\x00-\x7F]' "${CHECK_TARGETS[@]}" 2>/dev/null \
+          | grep -vF 'https://' || true)
+if [ -n "$non_ascii" ]; then
     echo "Non-ASCII characters found:" >&2
-    grep -rnP '[^\x00-\x7F]' "${CHECK_TARGETS[@]}" >&2
+    printf '%s\n' "$non_ascii" >&2
     exit 1
 fi
 
