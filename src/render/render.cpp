@@ -1,11 +1,14 @@
 #include "render.hpp"
 #include "camera.hpp"
 #include "matrix.hpp"
+#include "render_classes.hpp"
 
 #include <glad/glad.h>
 #include <GL/osmesa.h>
 
 #include <array>
+#include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -20,7 +23,6 @@ namespace {
 std::mutex camera_mutex;
 Camera camera;
 
-// Scancodes currently held (set on KeyDown, cleared on KeyUp).
 std::array<bool, 65536> key_state{};
 
 constexpr std::uint16_t SC_LEFT    = 0xFF51;
@@ -35,7 +37,6 @@ constexpr double SPRINT_MULT = 3.0;
 std::chrono::steady_clock::time_point last_frame_tp =
     std::chrono::steady_clock::now();
 
-
 struct DragState {
     bool dragging = false;
     std::int32_t last_x = 0;
@@ -46,10 +47,10 @@ DragState drag_;
 OSMesaContext ctx = nullptr;
 unsigned char* osmesa_buffer = nullptr;
 
-GLuint fbo = 0, color_tex = 0;
-GLuint vao = 0, vbo = 0, ibo = 0;
-GLuint program = 0;
-GLint proj_view_loc = -1;
+Fbo           g_fbo;
+ShaderProgram g_program;
+Mesh          g_mesh;
+int           g_proj_view_loc = -1;
 
 int g_width = WIDTH, g_height = HEIGHT;
 
@@ -81,90 +82,6 @@ void main() {
 }
 )";
 
-GLuint compile_shader(GLenum type, const char* source) {
-    GLuint shader = glCreateShader(type);
-    glShaderSource(shader, 1, &source, NULL);
-    glCompileShader(shader);
-    GLint success;
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
-    if (!success) {
-        char info_log[512];
-        glGetShaderInfoLog(shader, 512, NULL, info_log);
-        std::cerr << "Shader compilation failed: " << info_log << std::endl;
-        std::exit(1);
-    }
-    return shader;
-}
-
-void setup_fbo(int w, int h) {
-    glGenFramebuffers(1, &fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-
-    glGenTextures(1, &color_tex);
-    glBindTexture(GL_TEXTURE_2D, color_tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                           GL_TEXTURE_2D, color_tex, 0);
-
-    GLuint depth_rb;
-    glGenRenderbuffers(1, &depth_rb);
-    glBindRenderbuffer(GL_RENDERBUFFER, depth_rb);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
-                              GL_RENDERBUFFER, depth_rb);
-}
-
-void setup_mesh() {
-    float vertices[] = {
-        // pos (x,y,z)  color (r,g,b)
-        0,  1,  0,      1, 0, 0,   // 0 top    - red
-        1,  0,  0,      0, 1, 0,   // 1 +X     - green
-        0,  0,  1,      0, 0, 1,   // 2 +Z     - blue
-       -1,  0,  0,      1, 1, 0,   // 3 -X     - yellow
-        0,  0, -1,      1, 0, 1,   // 4 -Z     - magenta
-        0, -1,  0,      0, 1, 1,   // 5 bottom - cyan
-    };
-
-    unsigned int indices[] = {
-        0, 2, 1,
-        0, 3, 2,
-        0, 4, 3,
-        0, 1, 4,
-        5, 1, 2,
-        5, 2, 3,
-        5, 3, 4,
-        5, 4, 1,
-    };
-
-    glGenVertexArrays(1, &vao);
-    glGenBuffers(1, &vbo);
-    glGenBuffers(1, &ibo);
-    glBindVertexArray(vao);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
-
-    // position
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-
-    // color
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
-    glEnableVertexAttribArray(1);
-}
-
-void setup_program() {
-    GLuint vs = compile_shader(GL_VERTEX_SHADER,   vertex_shader_source);
-    GLuint fs = compile_shader(GL_FRAGMENT_SHADER, fragment_shader_source);
-    program = glCreateProgram();
-    glAttachShader(program, vs);
-    glAttachShader(program, fs);
-    glLinkProgram(program);
-    proj_view_loc = glGetUniformLocation(program, "uProjView");
-}
-
 } // anonymous namespace
 
 
@@ -194,7 +111,7 @@ void init() {
 
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
-    glFrontFace(GL_CCW);   // default, but explicit
+    glFrontFace(GL_CCW);
 
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
@@ -202,27 +119,49 @@ void init() {
     pixels.resize(g_width * g_height * 4);
     flipped.resize(g_width * g_height * 4);
 
-    setup_fbo(g_width, g_height);
-    setup_mesh();
-    setup_program();
+    g_fbo = Fbo(g_width, g_height);
+    g_program = ShaderProgram(vertex_shader_source, fragment_shader_source);
+    g_proj_view_loc = g_program.uniform_location("uProjView");
+
+    float vertices[] = {
+        // pos (x,y,z)  color (r,g,b)
+        0,  1,  0,      1, 0, 0,
+        1,  0,  0,      0, 1, 0,
+        0,  0,  1,      0, 0, 1,
+       -1,  0,  0,      1, 1, 0,
+        0,  0, -1,      1, 0, 1,
+        0, -1,  0,      0, 1, 1,
+    };
+    unsigned int indices[] = {
+        0, 2, 1,
+        0, 3, 2,
+        0, 4, 3,
+        0, 1, 4,
+        5, 1, 2,
+        5, 2, 3,
+        5, 3, 4,
+        5, 4, 1,
+    };
+
+    g_mesh.upload(vertices, 6, 6, indices, 24, {
+        {0, 3, 0},   // position: location 0, 3 comps, offset 0
+        {1, 3, 3},   // color:    location 1, 3 comps, offset 3 floats
+    });
 
     camera.set_aspect(static_cast<double>(g_width) / g_height);
 }
 
 void shutdown() {
-    if (fbo)       glDeleteFramebuffers(1, &fbo);
-    if (color_tex) glDeleteTextures(1, &color_tex);
-    if (vbo)       glDeleteBuffers(1, &vbo);
-    if (ibo)       glDeleteBuffers(1, &ibo);
-    if (vao)       glDeleteVertexArrays(1, &vao);
-    if (program)   glDeleteProgram(program);
+    // Destroy GL objects while the OSMesa context is still current.
+    g_mesh.reset();
+    g_program.reset();
+    g_fbo.reset();
 
     if (ctx) OSMesaDestroyContext(ctx);
     delete[] osmesa_buffer;
-    fbo = color_tex = vao = vbo = ibo = program = 0;
     ctx = nullptr;
     osmesa_buffer = nullptr;
-    proj_view_loc = -1;
+    g_proj_view_loc = -1;
 }
 
 
@@ -253,23 +192,22 @@ void handle_mouse(MouseEvent ev, std::int32_t x, std::int32_t y) {
             break;
     }
 }
+
 void handle_key(KeyEvent ev, std::uint16_t scancode) {
     std::lock_guard<std::mutex> lock(camera_mutex);
     key_state[scancode] = (ev == KeyEvent::Down);
 }
+
+namespace {
+
 void apply_camera_input(double td) {
-    // Space: toggle orbital / free (edge-triggered)
     if (key_state[' ']) {
         camera.change_orbital_mode();
         key_state[' '] = false;
     }
 
-    // Accumulate desired axes
-    double ax_fwd   = 0.0;
-    double ax_right = 0.0;
-    double ax_up    = 0.0;
+    double ax_fwd = 0.0, ax_right = 0.0, ax_up = 0.0;
 
-    // WASD and arrows are equivalent: both map onto forward/strafe axes
     if (key_state['w'] || key_state[SC_UP])    ax_fwd   += 1.0;
     if (key_state['s'] || key_state[SC_DOWN])  ax_fwd   -= 1.0;
     if (key_state['d'] || key_state[SC_RIGHT]) ax_right += 1.0;
@@ -280,8 +218,6 @@ void apply_camera_input(double td) {
     if (ax_fwd == 0.0 && ax_right == 0.0 && ax_up == 0.0) return;
 
     const Vec3<double> world_up{0.0, 1.0, 0.0};
-
-    // Accumulate in world space.
     const Vec3<double> dir =
           camera.forward() * ax_fwd
         + camera.right()   * ax_right
@@ -293,15 +229,15 @@ void apply_camera_input(double td) {
     const bool   sprint = key_state[SC_SHIFT_L] || key_state[SC_SHIFT_R];
     const double speed  = MOVE_SPEED * (sprint ? SPRINT_MULT : 1.0);
     const double dist   = speed * td;
-
     const Vec3<double> d = dir * (dist / len);
 
-    // Decompose into camera axes; each move_* keeps its own semantics
-    // (in orbital mode: forward changes radius, right/up rotate)
     camera.move_forward(d.dot(camera.forward()));
     camera.move_right  (d.dot(camera.right()));
     camera.move_up     (d.dot(world_up));
 }
+
+} // anonymous namespace
+
 
 const std::uint8_t* render_frame() {
     std::lock_guard<std::mutex> lock(camera_mutex);
@@ -309,16 +245,16 @@ const std::uint8_t* render_frame() {
     const auto now = std::chrono::steady_clock::now();
     double td = std::chrono::duration<double>(now - last_frame_tp).count();
     last_frame_tp = now;
-    if (td > 0.1) td = 0.1; // clamp: a stall must not teleport the camera
+    if (td > 0.1) td = 0.1;
 
     apply_camera_input(td);
 
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glViewport(0, 0, g_width, g_height);
+    g_fbo.bind();
+    glViewport(0, 0, g_fbo.width(), g_fbo.height());
     glClearColor(0.f, 0.f, 0.f, 1.f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    glUseProgram(program);
+    g_program.use();
 
     float pv_f[16];
     {
@@ -326,10 +262,9 @@ const std::uint8_t* render_frame() {
         for (std::size_t i = 0; i < 16; ++i)
             pv_f[i] = static_cast<float>(pv.data()[i]);
     }
-    glUniformMatrix4fv(proj_view_loc, 1, GL_TRUE, pv_f);  // GL_TRUE: Matrix is row-major
+    glUniformMatrix4fv(g_proj_view_loc, 1, GL_TRUE, pv_f);
 
-    glBindVertexArray(vao);
-    glDrawElements(GL_TRIANGLES, 24, GL_UNSIGNED_INT, 0);
+    g_mesh.draw();
 
     glReadPixels(0, 0, g_width, g_height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
 

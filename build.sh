@@ -160,6 +160,7 @@ echo ""
 
 compile server
 compile render/render
+compile render/render_classes
 compile render/stream
 
 echo "  CC   render/glad.c"
@@ -170,6 +171,7 @@ echo "  LD   graphics_server"
 "${CC[@]}" -o "$SCRIPT_DIR/graphics_server" \
     "$OBJ/server.o" \
     "$OBJ/render/render.o" \
+    "$OBJ/render/render_classes.o" \
     "$OBJ/render/stream.o" \
     "$OBJ/render/glad.o" \
     -lOSMesa -lavcodec -lavutil -lswscale -lpthread
