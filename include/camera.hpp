@@ -17,7 +17,7 @@ class Camera {
     Vec3<double> pos_{0, 0, 2};
     Vec3<double> ypr_{-20, 30, 0};
     double fovy_ = 90, aspect_ = 1, near_ = 0.1, far_ = 100, radius_ = 1.5;
-    bool orbital_mode_ = true;
+    bool orbital_mode_ = false;
 
     Matrix<double> proj_, view_, proj_view_, inv_proj_view_;
     Vec3<double> forward_, right_, up_;

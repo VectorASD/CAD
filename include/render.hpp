@@ -13,12 +13,16 @@ namespace geom::render {
 constexpr int WIDTH = 1024;
 constexpr int HEIGHT = 768;
 
-// Mouse event as seen by the render layer. Wire types map to this enum
-// in server.cpp; render.cpp does not know about sockets.
+// render.cpp does not know about sockets.
 enum class MouseEvent : uint8_t {
     Down,
     Move,
     Up,
+};
+
+enum class KeyEvent : std::uint8_t {
+    Down = 0,
+    Up   = 1,
 };
 
 
@@ -26,6 +30,8 @@ void init();
 void shutdown();
 
 void handle_mouse(MouseEvent ev, int32_t x, int32_t y);
+void handle_key(KeyEvent ev, std::uint16_t scancode);
+
 const uint8_t* render_frame();
 
 } // namespace geom::render

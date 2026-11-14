@@ -19,10 +19,6 @@ namespace server {
 constexpr int VIDEO_PORT = 12345;
 constexpr int CONTROL_PORT = 12346;
 
-// Wire format: [u8 type][i32 x_be][i32 y_be]
-
-constexpr size_t EVENT_SIZE = 9;
-
 std::atomic<bool> running(true);
 
 
@@ -57,27 +53,48 @@ bool send_all(int sock, const void* data, size_t size) {
     return true;
 }
 
-void control_thread(int sock, std::atomic<bool>* client_connected) {
-    uint8_t buf[EVENT_SIZE];
+void control_thread(int control_socket, std::atomic<bool>* client_connected) {
     while (*client_connected) {
-        ssize_t bytes = recv(sock, buf, EVENT_SIZE, MSG_WAITALL);
-        if (bytes <= 0) {
+        std::uint8_t type;
+        if (recv(control_socket, &type, 1, MSG_WAITALL) != 1) {
             *client_connected = false;
             break;
         }
 
-        geom::render::MouseEvent ev;
-        switch (buf[0]) {
-            case 0: ev = geom::render::MouseEvent::Down; break;
-            case 1: ev = geom::render::MouseEvent::Move; break;
-            case 2: ev = geom::render::MouseEvent::Up;   break;
-            default: continue;
-        }
+        if (type <= 2) {
+            // Mouse: [i32 x_be][i32 y_be]
+            std::uint8_t buf[8];
+            if (recv(control_socket, buf, 8, MSG_WAITALL) != 8) {
+                *client_connected = false;
+                break;
+            }
+            std::int32_t xb, yb;
+            std::memcpy(&xb, buf,     4);
+            std::memcpy(&yb, buf + 4, 4);
+            geom::render::handle_mouse(
+                static_cast<geom::render::MouseEvent>(type),
+                ntohl(xb), ntohl(yb));
 
-        int32_t xb, yb;
-        std::memcpy(&xb, buf + 1, 4);
-        std::memcpy(&yb, buf + 5, 4);
-        geom::render::handle_mouse(ev, ntohl(xb), ntohl(yb));
+        } else if (type == 3 || type == 4) {
+            // Keyboard: [u16 scancode_be]
+            std::uint8_t buf[2];
+            if (recv(control_socket, buf, 2, MSG_WAITALL) != 2) {
+                *client_connected = false;
+                break;
+            }
+            std::uint16_t sb;
+            std::memcpy(&sb, buf, 2);
+            geom::render::handle_key(
+                (type == 3) ? geom::render::KeyEvent::Down
+                            : geom::render::KeyEvent::Up,
+                ntohs(sb));
+
+        } else {
+            std::cerr << "Unknown event type: "
+                      << static_cast<int>(type) << std::endl;
+            *client_connected = false;
+            break;
+        }
     }
 }
 

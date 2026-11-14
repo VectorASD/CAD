@@ -3,3 +3,7 @@ CompileFlags:
     - -I/home/vectorasd/CAD/include
     - -std=c++20
     - -DNDEBUG
+
+InlayHints:
+  Enabled: Yes
+  Designators: No   # suppress [0]=, [1]=... array designator hints

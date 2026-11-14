@@ -5,6 +5,7 @@
 #include <glad/glad.h>
 #include <GL/osmesa.h>
 
+#include <array>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -18,6 +19,22 @@ namespace {
 
 std::mutex camera_mutex;
 Camera camera;
+
+// Scancodes currently held (set on KeyDown, cleared on KeyUp).
+std::array<bool, 65536> key_state{};
+
+constexpr std::uint16_t SC_LEFT    = 0xFF51;
+constexpr std::uint16_t SC_UP      = 0xFF52;
+constexpr std::uint16_t SC_RIGHT   = 0xFF53;
+constexpr std::uint16_t SC_DOWN    = 0xFF54;
+constexpr std::uint16_t SC_SHIFT_L = 0xFFE1;
+constexpr std::uint16_t SC_SHIFT_R = 0xFFE2;
+
+constexpr double MOVE_SPEED  = 3.0; // world units per second
+constexpr double SPRINT_MULT = 3.0;
+std::chrono::steady_clock::time_point last_frame_tp =
+    std::chrono::steady_clock::now();
+
 
 struct DragState {
     bool dragging = false;
@@ -42,17 +59,25 @@ std::vector<std::uint8_t> flipped(WIDTH * HEIGHT * 4);
 const char* vertex_shader_source = R"(
 #version 330 core
 layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aColor;
+
 uniform mat4 uProjView;
+
+out vec3 vColor;
+
 void main() {
     gl_Position = uProjView * vec4(aPos, 1.0);
+    vColor = aColor;
 }
 )";
 
 const char* fragment_shader_source = R"(
 #version 330 core
+in vec3 vColor;
 out vec4 FragColor;
+
 void main() {
-    FragColor = vec4(0.2, 0.6, 1.0, 1.0);
+    FragColor = vec4(vColor, 1.0);
 }
 )";
 
@@ -74,22 +99,43 @@ GLuint compile_shader(GLenum type, const char* source) {
 void setup_fbo(int w, int h) {
     glGenFramebuffers(1, &fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+
     glGenTextures(1, &color_tex);
     glBindTexture(GL_TEXTURE_2D, color_tex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0,
                  GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                            GL_TEXTURE_2D, color_tex, 0);
+
+    GLuint depth_rb;
+    glGenRenderbuffers(1, &depth_rb);
+    glBindRenderbuffer(GL_RENDERBUFFER, depth_rb);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                              GL_RENDERBUFFER, depth_rb);
 }
 
 void setup_mesh() {
     float vertices[] = {
-         0.0f,  0.5f, 0.0f,
-         0.5f,  0.0f, 0.0f,
-        -0.5f,  0.0f, 0.0f,
-         0.0f, -0.5f, 0.0f
+        // pos (x,y,z)  color (r,g,b)
+        0,  1,  0,      1, 0, 0,   // 0 top    - red
+        1,  0,  0,      0, 1, 0,   // 1 +X     - green
+        0,  0,  1,      0, 0, 1,   // 2 +Z     - blue
+       -1,  0,  0,      1, 1, 0,   // 3 -X     - yellow
+        0,  0, -1,      1, 0, 1,   // 4 -Z     - magenta
+        0, -1,  0,      0, 1, 1,   // 5 bottom - cyan
     };
-    unsigned int indices[] = { 0, 1, 2, 2, 1, 3 };
+
+    unsigned int indices[] = {
+        0, 2, 1,
+        0, 3, 2,
+        0, 4, 3,
+        0, 1, 4,
+        5, 1, 2,
+        5, 2, 3,
+        5, 3, 4,
+        5, 4, 1,
+    };
 
     glGenVertexArrays(1, &vao);
     glGenBuffers(1, &vbo);
@@ -99,8 +145,14 @@ void setup_mesh() {
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+
+    // position
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
+
+    // color
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
 }
 
 void setup_program() {
@@ -139,6 +191,13 @@ void init() {
         std::cerr << "Failed to initialize glad with OSMesa" << std::endl;
         std::exit(1);
     }
+
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+    glFrontFace(GL_CCW);   // default, but explicit
+
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
 
     pixels.resize(g_width * g_height * 4);
     flipped.resize(g_width * g_height * 4);
@@ -194,14 +253,70 @@ void handle_mouse(MouseEvent ev, std::int32_t x, std::int32_t y) {
             break;
     }
 }
+void handle_key(KeyEvent ev, std::uint16_t scancode) {
+    std::lock_guard<std::mutex> lock(camera_mutex);
+    key_state[scancode] = (ev == KeyEvent::Down);
+}
+void apply_camera_input(double td) {
+    // Space: toggle orbital / free (edge-triggered)
+    if (key_state[' ']) {
+        camera.change_orbital_mode();
+        key_state[' '] = false;
+    }
+
+    // Accumulate desired axes
+    double ax_fwd   = 0.0;
+    double ax_right = 0.0;
+    double ax_up    = 0.0;
+
+    // WASD and arrows are equivalent: both map onto forward/strafe axes
+    if (key_state['w'] || key_state[SC_UP])    ax_fwd   += 1.0;
+    if (key_state['s'] || key_state[SC_DOWN])  ax_fwd   -= 1.0;
+    if (key_state['d'] || key_state[SC_RIGHT]) ax_right += 1.0;
+    if (key_state['a'] || key_state[SC_LEFT])  ax_right -= 1.0;
+    if (key_state['e']) ax_up += 1.0;
+    if (key_state['q']) ax_up -= 1.0;
+
+    if (ax_fwd == 0.0 && ax_right == 0.0 && ax_up == 0.0) return;
+
+    const Vec3<double> world_up{0.0, 1.0, 0.0};
+
+    // Accumulate in world space.
+    const Vec3<double> dir =
+          camera.forward() * ax_fwd
+        + camera.right()   * ax_right
+        + world_up         * ax_up;
+
+    const double len = std::sqrt(dir.x*dir.x + dir.y*dir.y + dir.z*dir.z);
+    if (len < 1e-12) return;
+
+    const bool   sprint = key_state[SC_SHIFT_L] || key_state[SC_SHIFT_R];
+    const double speed  = MOVE_SPEED * (sprint ? SPRINT_MULT : 1.0);
+    const double dist   = speed * td;
+
+    const Vec3<double> d = dir * (dist / len);
+
+    // Decompose into camera axes; each move_* keeps its own semantics
+    // (in orbital mode: forward changes radius, right/up rotate)
+    camera.move_forward(d.dot(camera.forward()));
+    camera.move_right  (d.dot(camera.right()));
+    camera.move_up     (d.dot(world_up));
+}
 
 const std::uint8_t* render_frame() {
     std::lock_guard<std::mutex> lock(camera_mutex);
 
+    const auto now = std::chrono::steady_clock::now();
+    double td = std::chrono::duration<double>(now - last_frame_tp).count();
+    last_frame_tp = now;
+    if (td > 0.1) td = 0.1; // clamp: a stall must not teleport the camera
+
+    apply_camera_input(td);
+
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glViewport(0, 0, g_width, g_height);
     glClearColor(0.f, 0.f, 0.f, 1.f);
-    glClear(GL_COLOR_BUFFER_BIT);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     glUseProgram(program);
 
@@ -214,7 +329,7 @@ const std::uint8_t* render_frame() {
     glUniformMatrix4fv(proj_view_loc, 1, GL_TRUE, pv_f);  // GL_TRUE: Matrix is row-major
 
     glBindVertexArray(vao);
-    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+    glDrawElements(GL_TRIANGLES, 24, GL_UNSIGNED_INT, 0);
 
     glReadPixels(0, 0, g_width, g_height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
 

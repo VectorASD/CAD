@@ -1,3 +1,5 @@
 av
 opencv-python
 numpy
+pynput
+pywinctl
