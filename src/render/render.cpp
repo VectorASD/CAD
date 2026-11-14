@@ -1,7 +1,8 @@
 #include "render.hpp"
 #include "camera.hpp"
-#include "matrix.hpp"
 #include "render_classes.hpp"
+#include "bezier.hpp"
+#include "fraction.hpp"
 
 #include <glad/glad.h>
 #include <GL/osmesa.h>
@@ -47,40 +48,13 @@ DragState drag_;
 OSMesaContext ctx = nullptr;
 unsigned char* osmesa_buffer = nullptr;
 
-Fbo           g_fbo;
-ShaderProgram g_program;
-Mesh          g_mesh;
-int           g_proj_view_loc = -1;
+Fbo     g_fbo;
+Markers g_markers;
 
 int g_width = WIDTH, g_height = HEIGHT;
 
 std::vector<std::uint8_t> pixels(WIDTH * HEIGHT * 4);
 std::vector<std::uint8_t> flipped(WIDTH * HEIGHT * 4);
-
-const char* vertex_shader_source = R"(
-#version 330 core
-layout(location = 0) in vec3 aPos;
-layout(location = 1) in vec3 aColor;
-
-uniform mat4 uProjView;
-
-out vec3 vColor;
-
-void main() {
-    gl_Position = uProjView * vec4(aPos, 1.0);
-    vColor = aColor;
-}
-)";
-
-const char* fragment_shader_source = R"(
-#version 330 core
-in vec3 vColor;
-out vec4 FragColor;
-
-void main() {
-    FragColor = vec4(vColor, 1.0);
-}
-)";
 
 } // anonymous namespace
 
@@ -120,48 +94,49 @@ void init() {
     flipped.resize(g_width * g_height * 4);
 
     g_fbo = Fbo(g_width, g_height);
-    g_program = ShaderProgram(vertex_shader_source, fragment_shader_source);
-    g_proj_view_loc = g_program.uniform_location("uProjView");
+    g_markers.init();
 
-    float vertices[] = {
-        // pos (x,y,z)  color (r,g,b)
-        0,  1,  0,      1, 0, 0,
-        1,  0,  0,      0, 1, 0,
-        0,  0,  1,      0, 0, 1,
-       -1,  0,  0,      1, 1, 0,
-        0,  0, -1,      1, 0, 1,
-        0, -1,  0,      0, 1, 1,
-    };
-    unsigned int indices[] = {
-        0, 2, 1,
-        0, 3, 2,
-        0, 4, 3,
-        0, 1, 4,
-        5, 1, 2,
-        5, 2, 3,
-        5, 3, 4,
-        5, 4, 1,
-    };
+    // Demo markers: 33 points on a cubic Bezier (degree 3) in 3D,
+    // computed in exact rational arithmetic (Fraction<int>) by the
+    // geometry kernel, converted to double only at the render boundary
+    {
+        using S = Fraction<int>;
+        using V = Vec3<S>;
 
-    g_mesh.upload(vertices, 6, 6, indices, 24, {
-        {0, 3, 0},   // position: location 0, 3 comps, offset 0
-        {1, 3, 3},   // color:    location 1, 3 comps, offset 3 floats
-    });
+        const std::array<V, 4> control = {
+            V(S(-1), S( 0), S(-1)),
+            V(S(-1), S( 1), S( 1)),
+            V(S( 1), S(-1), S(-1)),
+            V(S( 1), S( 0), S( 1)),
+        };
+
+        std::vector<Marker> demo;
+        for (int i = 0; i <= 32; ++i) {
+            const S t(i, 32);
+            const V p = bezier<3>(control, t);
+            const double td = static_cast<double>(t);
+
+            demo.push_back({
+                .position = to_double(p),
+                .tint     = {1.0 - td, td, 0.0},
+                .scale    = 0.05,
+            });
+        }
+        g_markers.set(demo);
+    }
 
     camera.set_aspect(static_cast<double>(g_width) / g_height);
 }
 
 void shutdown() {
     // Destroy GL objects while the OSMesa context is still current.
-    g_mesh.reset();
-    g_program.reset();
     g_fbo.reset();
+    g_markers.reset();
 
     if (ctx) OSMesaDestroyContext(ctx);
     delete[] osmesa_buffer;
     ctx = nullptr;
     osmesa_buffer = nullptr;
-    g_proj_view_loc = -1;
 }
 
 
@@ -239,6 +214,13 @@ void apply_camera_input(double td) {
 } // anonymous namespace
 
 
+void set_markers(const std::vector<Marker>& markers) {
+    g_markers.set(markers);
+}
+void clear_markers() {
+    g_markers.clear();
+}
+
 const std::uint8_t* render_frame() {
     std::lock_guard<std::mutex> lock(camera_mutex);
 
@@ -254,17 +236,7 @@ const std::uint8_t* render_frame() {
     glClearColor(0.f, 0.f, 0.f, 1.f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    g_program.use();
-
-    float pv_f[16];
-    {
-        const auto& pv = camera.proj_view();
-        for (std::size_t i = 0; i < 16; ++i)
-            pv_f[i] = static_cast<float>(pv.data()[i]);
-    }
-    glUniformMatrix4fv(g_proj_view_loc, 1, GL_TRUE, pv_f);
-
-    g_mesh.draw();
+    g_markers.draw(camera.proj_view());
 
     glReadPixels(0, 0, g_width, g_height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
 

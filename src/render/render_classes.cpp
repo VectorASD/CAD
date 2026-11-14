@@ -227,4 +227,122 @@ void Mesh::reset() {
     index_count_ = 0;
 }
 
+
+// --- Markers ---
+
+namespace {
+
+const char* kMarkerVertexSrc = R"(
+#version 330 core
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aColor;
+
+uniform mat4 uProjView;
+uniform mat4 uModel;
+
+out vec3 vColor;
+
+void main() {
+    gl_Position = uProjView * uModel * vec4(aPos, 1.0);
+    vColor = aColor;
+}
+)";
+
+const char* kMarkerFragmentSrc = R"(
+#version 330 core
+in vec3 vColor;
+uniform vec3 uTint;
+
+out vec4 FragColor;
+
+void main() {
+    // Bias the tint slightly toward the per-vertex color so faces read
+    // as shaded, while the marker keeps its identity color.
+    vec3 c = mix(uTint, vColor, 0.3);
+    FragColor = vec4(c, 1.0);
+}
+)";
+
+} // anonymous namespace
+
+Markers::~Markers() { reset(); }
+
+void Markers::init() {
+    reset();
+
+    program_ = ShaderProgram(kMarkerVertexSrc, kMarkerFragmentSrc);
+    proj_view_loc_ = program_.uniform_location("uProjView");
+    model_loc_     = program_.uniform_location("uModel");
+    tint_loc_      = program_.uniform_location("uTint");
+
+    float vertices[] = {
+      // pos (x,y,z)    color (r,g,b)
+         0,  1,  0,     1, 0, 0,
+         1,  0,  0,     0, 1, 0,
+         0,  0,  1,     0, 0, 1,
+        -1,  0,  0,     1, 1, 0,
+         0,  0, -1,     1, 0, 1,
+         0, -1,  0,     0, 1, 1,
+    };
+    unsigned int indices[] = {
+        0, 2, 1,  0, 3, 2,  0, 4, 3,  0, 1, 4,
+        5, 1, 2,  5, 2, 3,  5, 3, 4,  5, 4, 1,
+    };
+    mesh_.upload(vertices, 6, 6, indices, 24, {
+        {0, 3, 0},
+        {1, 3, 3},
+    });
+}
+
+void Markers::reset() {
+    mesh_.reset();
+    program_.reset();
+    proj_view_loc_ = -1;
+    model_loc_     = -1;
+    tint_loc_      = -1;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    markers_.clear();
+}
+
+void Markers::set(const std::vector<Marker>& markers) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    markers_ = markers;
+}
+
+void Markers::clear() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    markers_.clear();
+}
+
+void Markers::draw(const Matrix<double>& proj_view) const {
+    if (!valid()) return;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (markers_.empty()) return;
+
+    program_.use();
+
+    float pv_f[16];
+    for (std::size_t i = 0; i < 16; ++i)
+        pv_f[i] = static_cast<float>(proj_view.data()[i]);
+    glUniformMatrix4fv(proj_view_loc_, 1, GL_TRUE, pv_f);
+
+    for (const auto& m : markers_) {
+        const float s = static_cast<float>(m.scale);
+        const float model[16] = {
+            s, 0, 0, static_cast<float>(m.position.x),
+            0, s, 0, static_cast<float>(m.position.y),
+            0, 0, s, static_cast<float>(m.position.z),
+            0, 0, 0, 1.0f,
+        };
+        glUniformMatrix4fv(model_loc_, 1, GL_TRUE, model);
+        glUniform3f(tint_loc_,
+                    static_cast<float>(m.tint.x),
+                    static_cast<float>(m.tint.y),
+                    static_cast<float>(m.tint.z));
+        mesh_.draw();
+    }
+}
+
 } // namespace geom::render

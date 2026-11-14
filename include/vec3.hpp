@@ -60,6 +60,19 @@ inline double lengthApprox(const Vec3<S>& v) {
     return std::sqrt(static_cast<double>(v.squaredLength()));
 }
 
+// Approximate conversion to a double-based Vec3. Lossy by design:
+// Fraction<int>, mpq_class, etc. do not fit into double, but rendering,
+// tessellation and SVG output do. This is the explicit boundary between
+// exact kernel arithmetic and the render layer.
+template<DoubleConvertible S>
+inline Vec3<double> to_double(const Vec3<S>& v) {
+    return {
+        static_cast<double>(v.x),
+        static_cast<double>(v.y),
+        static_cast<double>(v.z),
+    };
+}
+
 // Generic point: use this inside the kernel, where S is whatever the
 // model uses (double, Fraction<int>, mpq_class, ...).
 template<Scalar S>
