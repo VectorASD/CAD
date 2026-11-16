@@ -170,9 +170,9 @@ def control_sender():
 
 @dataclasses.dataclass
 class AppState:
-    window: ctypes.POINTER(sdl3.SDL_Window)
-    renderer: ctypes.POINTER(sdl3.SDL_Renderer)
-    texture: ctypes.POINTER(sdl3.SDL_Texture) = None
+    window: ctypes.POINTER(sdl3.SDL_Window)  # type: ignore[valid-type]
+    renderer: ctypes.POINTER(sdl3.SDL_Renderer)  # type: ignore[valid-type]
+    texture: ctypes.POINTER(sdl3.SDL_Texture) = None  # type: ignore[valid-type]
     tex_w: int = 0
     tex_h: int = 0
     mouse_down: bool = False

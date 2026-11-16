@@ -146,7 +146,7 @@ void run() {
         int enc_w = geom::render::current_width();
         int enc_h = geom::render::current_height();
         auto encoder = std::make_unique<geom::stream::H264Encoder>(
-            enc_w, enc_h, 2'000'000);
+            enc_w, enc_h, 5'000'000);
 
         std::atomic<bool> client_connected(true);
         std::thread ctrl(control_thread, control_socket, &client_connected);

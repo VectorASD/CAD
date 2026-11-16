@@ -31,12 +31,15 @@ H264Encoder::H264Encoder(int width, int height, int bitrate)
     codec_ctx_->time_base = {1, 30};
     codec_ctx_->framerate = {30, 1};
     codec_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
-    codec_ctx_->bit_rate = bitrate;
+    codec_ctx_->bit_rate       = bitrate;
+    codec_ctx_->rc_max_rate    = bitrate;
+    codec_ctx_->rc_buffer_size = 2 * bitrate;
 
-    if (av_opt_set(codec_ctx_->priv_data, "preset", "ultrafast", 0) < 0) {
-        std::cerr << "Failed to set preset=ultrafast" << std::endl;
+    if (av_opt_set(codec_ctx_->priv_data, "preset", "veryfast", 0) < 0) {
+        std::cerr << "Failed to set preset=veryfast" << std::endl;
         std::exit(1);
     }
+    // It disables B-frames, which cause you to wait a couple of seconds for the camera to respond!
     if (av_opt_set(codec_ctx_->priv_data, "tune", "zerolatency", 0) < 0) {
         std::cerr << "Failed to set tune=zerolatency" << std::endl;
         std::exit(1);
