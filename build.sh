@@ -186,6 +186,12 @@ echo "  DONE graphics_server built successfully."
 DOWNLOAD_DIR="/mnt/c/Users/VectorASD/Downloads"
 if [ -d "$DOWNLOAD_DIR" ]; then
     echo "  CP   python/ -> $DOWNLOAD_DIR"
-    rm -rf "$DOWNLOAD_DIR/python"
-    cp -r "$PYTHON_DIR" "$DOWNLOAD_DIR/"
+    rm -rf "$DOWNLOAD_DIR/python"        2>/dev/null || true
+    cp -r "$PYTHON_DIR" "$DOWNLOAD_DIR/" 2>/dev/null || true
 fi
+
+# --- Autorun ---
+
+pkill -f graphics_server || true
+./graphics_server &
+echo "Runned!"

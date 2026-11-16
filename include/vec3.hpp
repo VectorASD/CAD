@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <ostream>
+#include <vector>
 
 
 namespace geom {
@@ -47,6 +48,26 @@ struct Vec3 {
 template<Scalar S>
 std::ostream& operator<<(std::ostream& os, const Vec3<S>& v) {
     return os << '(' << v.x << ", " << v.y << ", " << v.z << ')';
+}
+template<typename T>
+std::ostream& operator<<(std::ostream& os, const std::vector<T>& v) {
+    os << '(';
+    bool first = true;
+    for (auto item : v) {
+        if (first) first = false;
+        else os << ", ";
+        os << item;
+    }
+    return os << ')';
+}
+template<typename T, std::size_t N>
+std::ostream& operator<<(std::ostream& os, const std::array<T, N>& P) {
+    os << '[';
+    for (std::size_t i = 0; i < N; ++i) {
+        if (i) os << ", ";
+        os << P[i];
+    }
+    return os << ']';
 }
 
 

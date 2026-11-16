@@ -2,6 +2,7 @@
 #include "camera.hpp"
 #include "render_classes.hpp"
 #include "bezier.hpp"
+#include "bezier_surface.hpp"
 #include "fraction.hpp"
 
 #include <glad/glad.h>
@@ -48,8 +49,9 @@ DragState drag_;
 OSMesaContext ctx = nullptr;
 unsigned char* osmesa_buffer = nullptr;
 
-Fbo     g_fbo;
-Markers g_markers;
+Fbo      g_fbo;
+Markers  g_markers;
+Surfaces g_surfaces;
 
 int g_width = WIDTH, g_height = HEIGHT;
 
@@ -96,33 +98,52 @@ void init() {
     g_fbo = Fbo(g_width, g_height);
     g_markers.init();
 
-    // Demo markers: 33 points on a cubic Bezier (degree 3) in 3D,
-    // computed in exact rational arithmetic (Fraction<int>) by the
-    // geometry kernel, converted to double only at the render boundary
-    {
-        using S = Fraction<int>;
-        using V = Vec3<S>;
+    using S = Fraction<int>;
+    using V = Vec3<S>;
 
-        const std::array<V, 4> control = {
+    std::vector<Marker> markers;
+
+    {
+        // --- 33 points on a cubic Bezier curve (degree 3) in 3D ---
+        const std::array<V, 4> curve_ctrl = {
             V(S(-1), S( 0), S(-1)),
             V(S(-1), S( 1), S( 1)),
             V(S( 1), S(-1), S(-1)),
             V(S( 1), S( 0), S( 1)),
         };
-
-        std::vector<Marker> demo;
         for (int i = 0; i <= 32; ++i) {
             const S t(i, 32);
-            const V p = bezier<3>(control, t);
+            const V p = bezier<3>(curve_ctrl, t);
             const double td = static_cast<double>(t);
-
-            demo.push_back({
+            markers.push_back({
                 .position = to_double(p),
                 .tint     = {1.0 - td, td, 0.0},
                 .scale    = 0.05,
             });
         }
-        g_markers.set(demo);
+
+        // --- 4x4 control points of the Bezier surface ---
+        BezierSurface<3, 3, S>::Grid grid = {{
+            {{V(S(0), S(0), S(0)), V(S(1), S(0), S(0)), V(S(2), S(0), S(0)), V(S(3), S(0), S(0))}},
+            {{V(S(0), S(0), S(1)), V(S(1), S(2), S(1)), V(S(2), S(2), S(1)), V(S(3), S(0), S(1))}},
+            {{V(S(0), S(0), S(2)), V(S(1), S(2), S(2)), V(S(2), S(2), S(2)), V(S(3), S(0), S(2))}},
+            {{V(S(0), S(0), S(3)), V(S(1), S(0), S(3)), V(S(2), S(0), S(3)), V(S(3), S(-2), S(3))}},
+        }};
+        for (const auto& row : grid) {
+            for (const auto& p : row) {
+                markers.push_back({
+                    .position = to_double(p),
+                    .tint     = {1.0, 1.0, 0.0},   // yellow
+                    .scale    = 0.08,               // slightly larger than curve points
+                });
+            }
+        }
+
+        BezierSurface<3, 3, S> surface(grid);
+
+        g_markers.set(markers);
+        g_surfaces.init();
+        g_surfaces.upload(surface.tessellate(20, 20));
     }
 
     camera.set_aspect(static_cast<double>(g_width) / g_height);
@@ -237,6 +258,7 @@ const std::uint8_t* render_frame() {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     g_markers.draw(camera.proj_view());
+    g_surfaces.draw(camera.proj_view());
 
     glReadPixels(0, 0, g_width, g_height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
 

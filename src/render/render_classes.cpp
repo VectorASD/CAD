@@ -345,4 +345,76 @@ void Markers::draw(const Matrix<double>& proj_view) const {
     }
 }
 
+
+// --- Surfaces ---
+
+namespace {
+
+const char* kSurfaceVertexSrc = R"(
+#version 330 core
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aColor;
+
+uniform mat4 uProjView;
+
+out vec3 vColor;
+
+void main() {
+    gl_Position = uProjView * vec4(aPos, 1.0);
+    vColor = aColor;
+}
+)";
+
+const char* kSurfaceFragmentSrc = R"(
+#version 330 core
+in vec3 vColor;
+out vec4 FragColor;
+
+void main() {
+    FragColor = vec4(vColor, 1.0);
+}
+)";
+
+} // anonymous namespace
+
+Surfaces::~Surfaces() { reset(); }
+
+void Surfaces::init() {
+    reset();
+
+    program_ = ShaderProgram(kSurfaceVertexSrc, kSurfaceFragmentSrc);
+    proj_view_loc_ = program_.uniform_location("uProjView");
+}
+
+void Surfaces::reset() {
+    mesh_.reset();
+    program_.reset();
+    proj_view_loc_ = -1;
+}
+
+void Surfaces::upload(const geom::RenderMesh& m) {
+    if (m.vertices.empty() || m.indices.empty()) {
+        mesh_.reset();
+        return;
+    }
+    mesh_.upload(m.vertices.data(),
+                 m.vertices.size() / RenderMesh::floats_per_vertex,
+                 RenderMesh::floats_per_vertex,
+                 m.indices.data(), m.indices.size(),
+                 { {0, 3, 0}, {1, 3, 3} });
+}
+
+void Surfaces::draw(const Matrix<double>& proj_view) const {
+    if (!valid()) return;
+
+    program_.use();
+
+    float pv_f[16];
+    for (std::size_t i = 0; i < 16; ++i)
+        pv_f[i] = static_cast<float>(proj_view.data()[i]);
+    glUniformMatrix4fv(proj_view_loc_, 1, GL_TRUE, pv_f);
+
+    mesh_.draw();
+}
+
 } // namespace geom::render

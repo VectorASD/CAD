@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "matrix.hpp"
+#include "render_mesh.hpp"
 
 
 namespace geom::render {
@@ -134,5 +135,30 @@ private:
     std::vector<Marker> markers_;
 };
 
+
+// Owns the GL state needed to draw a kernel-produced RenderMesh. No
+// geometry knowledge here: vertices arrive pre-tessellated from the
+// geometry kernel's tessellate(), we just upload and draw.
+class Surfaces {
+public:
+    Surfaces() = default;
+    ~Surfaces();
+
+    Surfaces(const Surfaces&) = delete;
+    Surfaces& operator=(const Surfaces&) = delete;
+
+    void init();   // requires a current GL context
+    void reset();
+
+    bool valid() const { return program_.valid() && mesh_.valid(); }
+
+    void upload(const geom::RenderMesh& m);
+    void draw(const Matrix<double>& proj_view) const;
+
+private:
+    ShaderProgram program_;
+    Mesh          mesh_;
+    int           proj_view_loc_ = -1;
+};
 
 } // namespace geom::render
