@@ -55,10 +55,15 @@ SkyBox         g_skybox;
 std::vector<CubemapTexture> g_skybox_textures;
 std::atomic<int>            g_skybox_current{0};
 
-int g_width = WIDTH, g_height = HEIGHT;
+int g_width = DEFAULT_WIDTH, g_height = DEFAULT_HEIGHT;
 
-std::vector<std::uint8_t> pixels(WIDTH * HEIGHT * 4);
-std::vector<std::uint8_t> flipped(WIDTH * HEIGHT * 4);
+std::vector<std::uint8_t> pixels(DEFAULT_WIDTH * DEFAULT_HEIGHT * 4);
+std::vector<std::uint8_t> flipped(DEFAULT_WIDTH * DEFAULT_HEIGHT * 4);
+
+std::atomic<int> g_pending_width{0};
+std::atomic<int> g_pending_height{0};
+constexpr int MIN_DIM = 64;
+constexpr int MAX_DIM = 4096;
 
 } // anonymous namespace
 
@@ -218,6 +223,19 @@ void handle_key(KeyEvent ev, std::uint16_t scancode) {
     key_state[scancode] = (ev == KeyEvent::Down);
 }
 
+void handle_resize(int width, int height) {
+    // H.264 4:2:0 encoder rejects odd dimensions, so snap to even here.
+    // Rounding down loses at most 1 pixel; the client is expected to
+    // round its own window size to match, but do not trust that.
+    width  &= ~1;
+    height &= ~1;
+
+    if (width  < MIN_DIM || width  > MAX_DIM) return;
+    if (height < MIN_DIM || height > MAX_DIM) return;
+    g_pending_width.store(width);
+    g_pending_height.store(height);
+}
+
 namespace {
 
 void apply_camera_input(double td) {
@@ -280,6 +298,19 @@ void clear_markers() {
 const std::uint8_t* render_frame() {
     std::lock_guard<std::mutex> lock(camera_mutex);
 
+    const int pw = g_pending_width.exchange(0);
+    const int ph = g_pending_height.exchange(0);
+    if (pw > 0 && ph > 0 && (pw != g_width || ph != g_height)) {
+        g_width  = pw;
+        g_height = ph;
+
+        g_fbo = Fbo(g_width, g_height);
+        pixels.resize(g_width * g_height * 4);
+        flipped.resize(g_width * g_height * 4);
+        camera.set_aspect(static_cast<double>(g_width) / g_height);
+    }
+
+
     const auto now = std::chrono::steady_clock::now();
     double td = std::chrono::duration<double>(now - last_frame_tp).count();
     last_frame_tp = now;
@@ -318,5 +349,8 @@ const std::uint8_t* render_frame() {
     }
     return flipped.data();
 }
+
+int current_width()  { return g_width; }
+int current_height() { return g_height; }
 
 } // namespace geom::render

@@ -5,6 +5,7 @@ import time
 import queue
 
 import av
+import numpy as np
 import pygame
 
 
@@ -13,9 +14,14 @@ VIDEO_PORT = 12345
 CONTROL_PORT = 12346
 
 WINDOW_NAME = "CAD Stream"
-WINDOW_W = 800
-WINDOW_H = 600
+INITIAL_W = 1024
+INITIAL_H = 768
 FPS = 60
+
+# Read by control_sender after (re)connect; written by the main thread
+# on VIDEORESIZE. Tuple assignment is atomic under CPython, so the
+# control thread either sees the old or the new size, never a torn one.
+current_window_size = (INITIAL_W, INITIAL_H)
 
 latest_frame = None
 running = True
@@ -27,6 +33,7 @@ EV_MOUSE_MOVE = 1
 EV_MOUSE_UP   = 2
 EV_KEY_DOWN   = 3
 EV_KEY_UP     = 4
+EV_RESIZE = 5
 
 # Thread-safe queue for input events (mouse + keyboard)
 event_queue = queue.Queue(maxsize=200)
@@ -63,6 +70,8 @@ def key_to_scancode(key):
 def pack_event(ev, a, b):
     if ev in (EV_MOUSE_DOWN, EV_MOUSE_MOVE, EV_MOUSE_UP):
         return struct.pack('>Bii', ev, a, b)
+    if ev == EV_RESIZE:
+        return struct.pack('>BHH', ev, a & 0xFFFF, b & 0xFFFF)
     return struct.pack('>BH', ev, a & 0xFFFF)
 
 
@@ -91,7 +100,7 @@ def video_receiver():
                 for packet in packets:
                     try:
                         for frame in codec.decode(packet):
-                            latest_frame = frame.to_ndarray(format='bgr24')
+                            latest_frame = np.ascontiguousarray(frame.to_ndarray(format='bgr24'))
                     except Exception:
                         pass
         except ConnectionRefusedError:
@@ -118,6 +127,8 @@ def control_sender():
                 sock.connect((SERVER_IP, CONTROL_PORT))
                 control_socket = sock
                 control_connected = True
+                w, h = current_window_size
+                sock.sendall(pack_event(EV_RESIZE, w, h))
                 print("Control: Connected to server.")
             except ConnectionRefusedError:
                 if control_socket:
@@ -144,10 +155,10 @@ def control_sender():
 
 
 def main():
-    global latest_frame, running
+    global latest_frame, running, current_window_size
 
     pygame.init()
-    screen = pygame.display.set_mode((WINDOW_W, WINDOW_H))
+    screen = pygame.display.set_mode((INITIAL_W, INITIAL_H), pygame.RESIZABLE)
     pygame.display.set_caption(WINDOW_NAME)
     clock = pygame.time.Clock()
     font = pygame.font.SysFont('sans', 24)
@@ -159,8 +170,7 @@ def main():
     t_control.start()
 
     mouse_down = False
-    pressed_keys = set()  # for clean shutdown
-    video_size = None
+    pressed_keys = set()
 
     try:
         while running:
@@ -168,6 +178,10 @@ def main():
                 if event.type == pygame.QUIT:
                     running = False
                     break
+
+                elif event.type in (pygame.VIDEORESIZE, pygame.WINDOWSIZECHANGED):
+                    # It only works when you release the mouse :/
+                    pass
 
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
@@ -210,11 +224,21 @@ def main():
                     except queue.Full:
                         pass
 
+            # H.264 4:2:0 requires even dimensions; snap to even so the server
+            # and the encoder agree with the window we create here
+            win_w, win_h = screen.get_size()
+            win_w &= ~1
+            win_h &= ~1
+            if (win_w, win_h) != current_window_size:
+                current_window_size = (win_w, win_h)
+                screen = pygame.display.set_mode((win_w, win_h), pygame.RESIZABLE)
+                try:
+                    event_queue.put_nowait((EV_RESIZE, win_w, win_h))
+                except queue.Full:
+                    pass
+
             if latest_frame is not None:
                 h, w = latest_frame.shape[:2]
-                if video_size != (w, h):
-                    video_size = (w, h)
-                    screen = pygame.display.set_mode((w, h), pygame.RESIZABLE)
                 surf = pygame.image.frombuffer(latest_frame, (w, h), 'BGR')
                 screen.blit(surf, (0, 0))
             else:
@@ -223,7 +247,6 @@ def main():
                 screen.blit(placeholder,
                             ((w - placeholder.get_width())  // 2,
                              (h - placeholder.get_height()) // 2))
-
 
             pygame.display.flip()
             clock.tick(FPS)

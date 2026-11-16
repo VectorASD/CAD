@@ -61,7 +61,8 @@ void control_thread(int control_socket, std::atomic<bool>* client_connected) {
             break;
         }
 
-        if (type <= 2) {
+        switch (type) {
+        case 0 ... 2: {
             // Mouse: [i32 x_be][i32 y_be]
             std::uint8_t buf[8];
             if (recv(control_socket, buf, 8, MSG_WAITALL) != 8) {
@@ -74,8 +75,9 @@ void control_thread(int control_socket, std::atomic<bool>* client_connected) {
             geom::render::handle_mouse(
                 static_cast<geom::render::MouseEvent>(type),
                 ntohl(xb), ntohl(yb));
+            break; }
 
-        } else if (type == 3 || type == 4) {
+        case 3 ... 4: {
             // Keyboard: [u16 scancode_be]
             std::uint8_t buf[2];
             if (recv(control_socket, buf, 2, MSG_WAITALL) != 2) {
@@ -88,10 +90,23 @@ void control_thread(int control_socket, std::atomic<bool>* client_connected) {
                 (type == 3) ? geom::render::KeyEvent::Down
                             : geom::render::KeyEvent::Up,
                 ntohs(sb));
+            break; }
 
-        } else {
-            std::cerr << "Unknown event type: "
-                      << static_cast<int>(type) << std::endl;
+        case 5: {
+            // Resize: [u16 width_be][u16 height_be]
+            std::uint8_t buf[4];
+            if (recv(control_socket, buf, 4, MSG_WAITALL) != 4) {
+                *client_connected = false;
+                break;
+            }
+            std::uint16_t wb, hb;
+            std::memcpy(&wb, buf,     2);
+            std::memcpy(&hb, buf + 2, 2);
+            geom::render::handle_resize(ntohs(wb), ntohs(hb));
+            break; }
+
+        default:
+            std::cerr << "Unknown event type: " << static_cast<int>(type) << std::endl;
             *client_connected = false;
             break;
         }
@@ -102,7 +117,7 @@ void run() {
     signal(SIGPIPE, SIG_IGN);
     geom::render::init();
 
-    int video_server = create_server_socket(VIDEO_PORT);
+    int video_server   = create_server_socket(VIDEO_PORT);
     int control_server = create_server_socket(CONTROL_PORT);
 
     while (running) {
@@ -120,10 +135,18 @@ void run() {
         }
 
         std::cout << "Client connected." << std::endl;
+        geom::render::handle_resize(geom::render::DEFAULT_WIDTH,
+                                    geom::render::DEFAULT_HEIGHT);
 
-        geom::stream::H264Encoder encoder(geom::render::WIDTH,
-                                          geom::render::HEIGHT,
-                                          2'000'000);
+        // Render one frame so the pending resize is applied before the
+        // encoder is sized -- otherwise the first frame would hand the
+        // encoder a buffer of the wrong size.
+        geom::render::render_frame();
+
+        int enc_w = geom::render::current_width();
+        int enc_h = geom::render::current_height();
+        auto encoder = std::make_unique<geom::stream::H264Encoder>(
+            enc_w, enc_h, 2'000'000);
 
         std::atomic<bool> client_connected(true);
         std::thread ctrl(control_thread, control_socket, &client_connected);
@@ -132,7 +155,20 @@ void run() {
         while (running && client_connected) {
             const uint8_t* pixels = geom::render::render_frame();
 
-            bool ok = encoder.encode(pixels, frame_count++,
+            const int w = geom::render::current_width();
+            const int h = geom::render::current_height();
+            if (w != enc_w || h != enc_h) {
+                // Client resized. Old encoder's SPS/PPS are for the old
+                // resolution; drop it and start a fresh stream. The first
+                // packet of the new encoder carries its own SPS/PPS, which
+                // the client's decoder re-reads.
+                enc_w = w;
+                enc_h = h;
+                encoder = std::make_unique<geom::stream::H264Encoder>(
+                    enc_w, enc_h, 2'000'000);
+            }
+
+            bool ok = encoder->encode(pixels, frame_count++,
                 [&](const uint8_t* data, size_t size) {
                     uint32_t net_size = htonl(static_cast<uint32_t>(size));
                     return send_all(video_socket, &net_size, sizeof(net_size))
