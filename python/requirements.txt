@@ -6,6 +6,11 @@
 # pynput
 # pywinctl
 
+# for 'client_old2.pyw':
+# av
+# pygame
+# numpy
+
 av
-pygame
+pysdl3
 numpy
