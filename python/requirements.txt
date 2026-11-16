@@ -1,5 +1,11 @@
+# for 'client_old.pyw':
+
+# av
+# opencv-python
+# numpy
+# pynput
+# pywinctl
+
 av
-opencv-python
+pygame
 numpy
-pynput
-pywinctl
