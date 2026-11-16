@@ -46,11 +46,11 @@ KEY_MAP = {
     Key.up:        0xFF52,
     Key.right:     0xFF53,
     Key.down:      0xFF54,
-    Key.shift:     0xFFE1,
+    Key.shift:     0xFFE1,  Key.shift_l: 0xFFE1,
     Key.shift_r:   0xFFE2,
-    Key.ctrl:      0xFFE3,
+    Key.ctrl:      0xFFE3,  Key.ctrl_l:  0xFFE3,
     Key.ctrl_r:    0xFFE4,
-    Key.alt:       0xFFE9,
+    Key.alt:       0xFFE9,  Key.alt_l:   0xFFE9,
     Key.alt_r:     0xFFEA,
     Key.tab:       0xFF09,
     Key.enter:     0xFF0D,
@@ -230,7 +230,11 @@ def main():
 
             # 3. Process keyboard events
             key = cv2.waitKey(10) & 0xFF
-            if key == ord('q'):
+            if key == 27: # esc
+                try:
+                    event_queue.put_nowait((EV_KEY_UP, 0xFF1B, 0))
+                except queue.Full:
+                    pass
                 break
     finally:
         listener.stop()

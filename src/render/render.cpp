@@ -1,20 +1,26 @@
 #include "render.hpp"
-#include "camera.hpp"
-#include "render_classes.hpp"
+
+// kernel
 #include "bezier.hpp"
 #include "bezier_surface.hpp"
 #include "fraction.hpp"
+
+// render
+#include "camera.hpp"
+#include "render_classes.hpp"
 
 #include <glad/glad.h>
 #include <GL/osmesa.h>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <mutex>
+#include <string>
 #include <vector>
 
 
@@ -26,13 +32,6 @@ std::mutex camera_mutex;
 Camera camera;
 
 std::array<bool, 65536> key_state{};
-
-constexpr std::uint16_t SC_LEFT    = 0xFF51;
-constexpr std::uint16_t SC_UP      = 0xFF52;
-constexpr std::uint16_t SC_RIGHT   = 0xFF53;
-constexpr std::uint16_t SC_DOWN    = 0xFF54;
-constexpr std::uint16_t SC_SHIFT_L = 0xFFE1;
-constexpr std::uint16_t SC_SHIFT_R = 0xFFE2;
 
 constexpr double MOVE_SPEED  = 3.0; // world units per second
 constexpr double SPRINT_MULT = 3.0;
@@ -49,9 +48,12 @@ DragState drag_;
 OSMesaContext ctx = nullptr;
 unsigned char* osmesa_buffer = nullptr;
 
-Fbo      g_fbo;
-Markers  g_markers;
-Surfaces g_surfaces;
+Fbo            g_fbo;
+Markers        g_markers;
+Surfaces       g_surfaces;
+SkyBox         g_skybox;
+std::vector<CubemapTexture> g_skybox_textures;
+std::atomic<int>            g_skybox_current{0};
 
 int g_width = WIDTH, g_height = HEIGHT;
 
@@ -146,15 +148,37 @@ void init() {
         g_surfaces.upload(surface.tessellate(20, 20));
     }
 
+    std::string SCRIPT_DIR = "/home/vectorasd/CAD/";
+    {
+        const int space_faces[] = { 4, 6, 3, 11, 5, 7 };
+        CubemapTexture space;
+        if (space.load_from_atlas(SCRIPT_DIR + "assets/skybox_space.webp", 4, 3, space_faces))
+            g_skybox_textures.push_back(std::move(space));
+
+        const int labeled_faces[] = { 0, 1, 2, 3, 4, 5 };
+        CubemapTexture labeled;
+        if (labeled.load_from_atlas(SCRIPT_DIR + "assets/skybox_labeled.png", 1, 6, labeled_faces))
+            g_skybox_textures.push_back(std::move(labeled));
+    }
+    g_skybox.init();
+
     camera.set_aspect(static_cast<double>(g_width) / g_height);
 }
 
 void shutdown() {
     // Destroy GL objects while the OSMesa context is still current.
-    g_fbo.reset();
-    g_markers.reset();
+    g_skybox.reset();
+    for (CubemapTexture& skybox : g_skybox_textures)
+        skybox.reset();
+    g_skybox_textures.clear();
+    g_skybox_current.store(0);
 
-    if (ctx) OSMesaDestroyContext(ctx);
+    g_markers.reset();
+    g_surfaces.reset();
+    g_fbo.reset();
+
+    if (ctx)
+        OSMesaDestroyContext(ctx);
     delete[] osmesa_buffer;
     ctx = nullptr;
     osmesa_buffer = nullptr;
@@ -197,9 +221,21 @@ void handle_key(KeyEvent ev, std::uint16_t scancode) {
 namespace {
 
 void apply_camera_input(double td) {
-    if (key_state[' ']) {
+    const bool shift = key_state[SC_SHIFT_L] || key_state[SC_SHIFT_R];
+    const bool ctrl  = key_state[SC_CTRL_L]  || key_state[SC_CTRL_R];
+    // const bool alt   = key_state[SC_ALT_L]   || key_state[SC_ALT_R];
+
+    if (key_state['e']) {
         camera.change_orbital_mode();
-        key_state[' '] = false;
+        key_state['e'] = false;
+    }
+    if (key_state['q']) {
+        key_state['q'] = false;
+        const int n = static_cast<int>(g_skybox_textures.size());
+        if (n) {
+            int next = (g_skybox_current.load() + 1) % n;
+            g_skybox_current.store(next);
+        }
     }
 
     double ax_fwd = 0.0, ax_right = 0.0, ax_up = 0.0;
@@ -208,8 +244,8 @@ void apply_camera_input(double td) {
     if (key_state['s'] || key_state[SC_DOWN])  ax_fwd   -= 1.0;
     if (key_state['d'] || key_state[SC_RIGHT]) ax_right += 1.0;
     if (key_state['a'] || key_state[SC_LEFT])  ax_right -= 1.0;
-    if (key_state['e']) ax_up += 1.0;
-    if (key_state['q']) ax_up -= 1.0;
+    if (key_state[' ']) ax_up += 1.0;
+    if (ctrl)           ax_up -= 1.0;
 
     if (ax_fwd == 0.0 && ax_right == 0.0 && ax_up == 0.0) return;
 
@@ -222,8 +258,7 @@ void apply_camera_input(double td) {
     const double len = std::sqrt(dir.x*dir.x + dir.y*dir.y + dir.z*dir.z);
     if (len < 1e-12) return;
 
-    const bool   sprint = key_state[SC_SHIFT_L] || key_state[SC_SHIFT_R];
-    const double speed  = MOVE_SPEED * (sprint ? SPRINT_MULT : 1.0);
+    const double speed  = MOVE_SPEED * (shift ? SPRINT_MULT : 1.0);
     const double dist   = speed * td;
     const Vec3<double> d = dir * (dist / len);
 
@@ -252,15 +287,29 @@ const std::uint8_t* render_frame() {
 
     apply_camera_input(td);
 
+
     g_fbo.bind();
     glViewport(0, 0, g_fbo.width(), g_fbo.height());
     glClearColor(0.f, 0.f, 0.f, 1.f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
+    // Opaque geometry first
     g_markers.draw(camera.proj_view());
     g_surfaces.draw(camera.proj_view());
 
+    // Skybox last: GL_LEQUAL + z=w means it fills only untouched pixels
+    const int skybox_idx = g_skybox_current.load();
+    if (skybox_idx >= 0 && skybox_idx < static_cast<int>(g_skybox_textures.size())) {
+        Matrix<double> view_rot = camera.view();
+        view_rot(0, 3) = 0.0;
+        view_rot(1, 3) = 0.0;
+        view_rot(2, 3) = 0.0;
+        const Matrix<double> proj_view_rot = camera.proj() * view_rot;
+        g_skybox.draw(proj_view_rot, g_skybox_textures[skybox_idx]);
+    }
+
     glReadPixels(0, 0, g_width, g_height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+
 
     for (int y = 0; y < g_height; ++y) {
         std::memcpy(&flipped[y * g_width * 4],

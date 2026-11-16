@@ -162,6 +162,7 @@ compile server
 compile render/render
 compile render/render_classes
 compile render/stream
+compile image_loader
 
 echo "  CC   render/glad.c"
 "${CC_C[@]}" -I"$INCLUDE" -O3 -g -Wall \
@@ -174,6 +175,7 @@ echo "  LD   graphics_server"
     "$OBJ/render/render_classes.o" \
     "$OBJ/render/stream.o" \
     "$OBJ/render/glad.o" \
+    "$OBJ/image_loader.o" \
     -lOSMesa -lavcodec -lavutil -lswscale -lpthread
 
 echo "  STRIP graphics_server"
@@ -192,6 +194,10 @@ fi
 
 # --- Autorun ---
 
-pkill -f graphics_server || true
+pkill -x graphics_server || true
 ./graphics_server &
 echo "Runned!"
+
+: << COMMENT
+git --no-pager diff --staged -- '*.cpp' '*.hpp' '*.py' '*.pyw' '*.sh'
+COMMENT

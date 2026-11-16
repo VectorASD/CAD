@@ -1,7 +1,9 @@
 #include "render_classes.hpp"
+#include "image/image_loader.hpp"
 
 #include <glad/glad.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <iostream>
 
@@ -95,8 +97,12 @@ void ShaderProgram::reset() {
 
 // --- Fbo ---
 
-Fbo::Fbo(int width, int height) : width_(width), height_(height) {
+Fbo::Fbo(int width, int height, FboKind kind)
+    : width_(width), height_(height) {
     glGenFramebuffers(1, &fbo_);
+    if (kind == FboKind::Empty)
+        return;
+
     glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
 
     glGenTextures(1, &color_tex_);
@@ -150,6 +156,16 @@ void Fbo::reset() {
     if (depth_rb_)  glDeleteRenderbuffers(1, &depth_rb_);
     fbo_ = color_tex_ = depth_rb_ = 0;
     width_ = height_ = 0;
+}
+
+void Fbo::attach_cubemap_face(unsigned int cube_tex, int face) {
+    if (face < 0 || face > 5)
+        return;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, cube_tex, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        std::cerr << "cubemap face " << face << " attach incomplete" << std::endl;
 }
 
 
@@ -225,6 +241,90 @@ void Mesh::reset() {
     if (ibo_) glDeleteBuffers(1, &ibo_);
     vao_ = vbo_ = ibo_ = 0;
     index_count_ = 0;
+}
+
+
+// --- SpriteRenderer ---
+
+const char* kSpriteVertexSrc = R"(
+#version 330 core
+layout(location = 0) in vec2 aPos;
+layout(location = 1) in vec2 aUV;
+
+out vec2 vUV;
+
+void main() {
+    gl_Position = vec4(aPos, 0.0, 1.0);
+    vUV = aUV;
+}
+)";
+
+const char* kSpriteFragmentSrc = R"(
+#version 330 core
+in vec2 vUV;
+uniform sampler2D uTexture;
+uniform vec4 uUVRange;   // u0, v0, u1, v1
+
+out vec4 FragColor;
+
+void main() {
+    vec2 uv = mix(uUVRange.xy, uUVRange.zw, vUV);
+    FragColor = texture(uTexture, uv);
+}
+)";
+
+SpriteRenderer::~SpriteRenderer() { reset(); }
+
+void SpriteRenderer::init() {
+    reset();
+
+    program_ = ShaderProgram(kSpriteVertexSrc, kSpriteFragmentSrc);
+    tex_loc_      = program_.uniform_location("uTexture");
+    uv_range_loc_ = program_.uniform_location("uUVRange");
+
+    float vertices[] = {
+        // pos2     uv2
+        -1, -1,    0, 0,
+         1, -1,    1, 0,
+         1,  1,    1, 1,
+        -1,  1,    0, 1,
+    };
+    unsigned int indices[] = { 0, 1, 2,  0, 2, 3 };
+    mesh_.upload(vertices, 4, 4, indices, 6, {
+        {0, 2, 0},   // aPos: 2 components, offset 0
+        {1, 2, 2},   // aUV:  2 components, offset 2 floats
+    });
+}
+
+void SpriteRenderer::reset() {
+    mesh_.reset();
+    program_.reset();
+    tex_loc_ = -1;
+    uv_range_loc_ = -1;
+}
+
+void SpriteRenderer::draw_tile(unsigned int tex_id,
+                               float u0, float v0, float u1, float v1) {
+    if (!valid())
+        return;
+
+    const GLboolean was_depth = glIsEnabled(GL_DEPTH_TEST);
+    const GLboolean was_cull  = glIsEnabled(GL_CULL_FACE);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+
+    program_.use();
+    glUniform1i(tex_loc_, 0);
+    glUniform4f(uv_range_loc_, u0, v0, u1, v1);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex_id);
+
+    mesh_.draw();
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+    if (was_depth) glEnable(GL_DEPTH_TEST);
+    if (was_cull)  glEnable(GL_CULL_FACE);
 }
 
 
@@ -316,10 +416,12 @@ void Markers::clear() {
 }
 
 void Markers::draw(const Matrix<double>& proj_view) const {
-    if (!valid()) return;
+    if (!valid())
+        return;
 
     std::lock_guard<std::mutex> lock(mutex_);
-    if (markers_.empty()) return;
+    if (markers_.empty())
+        return;
 
     program_.use();
 
@@ -343,6 +445,274 @@ void Markers::draw(const Matrix<double>& proj_view) const {
                     static_cast<float>(m.tint.z));
         mesh_.draw();
     }
+}
+
+
+// --- Texture ---
+
+Texture::~Texture() { reset(); }
+
+Texture::Texture(Texture&& other) noexcept
+    : id_(other.id_), width_(other.width_), height_(other.height_) {
+    other.id_ = 0; other.width_ = other.height_ = 0;
+}
+
+Texture& Texture::operator=(Texture&& other) noexcept {
+    if (this != &other) {
+        reset();
+        id_ = other.id_; width_ = other.width_; height_ = other.height_;
+        other.id_ = 0; other.width_ = other.height_ = 0;
+    }
+    return *this;
+}
+
+void Texture::create(int width, int height, int filter,
+                     const std::uint8_t* rgba) {
+    reset();
+    glGenTextures(1, &id_);
+    glBindTexture(GL_TEXTURE_2D, id_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    width_ = width;
+    height_ = height;
+}
+
+bool Texture::load_from_file(const std::string& path, int filter) {
+    const ImageData img = load_image(path);
+    if (img.width == 0)
+        return false;
+    create(img.width, img.height, filter, img.rgba.data());
+    return true;
+}
+
+void Texture::bind(int unit) const {
+    glActiveTexture(GL_TEXTURE0 + unit);
+    glBindTexture(GL_TEXTURE_2D, id_);
+}
+
+void Texture::unbind() { glBindTexture(GL_TEXTURE_2D, 0); }
+
+void Texture::reset() {
+    if (id_) glDeleteTextures(1, &id_);
+    id_ = 0; width_ = height_ = 0;
+}
+
+
+// --- CubemapTexture ---
+
+CubemapTexture::~CubemapTexture() { reset(); }
+
+CubemapTexture::CubemapTexture(CubemapTexture&& other) noexcept
+    : id_(other.id_), size_(other.size_) {
+    other.id_ = 0;
+    other.size_ = 0;
+}
+
+CubemapTexture& CubemapTexture::operator=(CubemapTexture&& other) noexcept {
+    if (this != &other) {
+        reset();
+        id_ = other.id_;
+        size_ = other.size_;
+        other.id_ = 0;
+        other.size_ = 0;
+    }
+    return *this;
+}
+
+void CubemapTexture::create(int face_size, int filter) {
+    reset();
+    glGenTextures(1, &id_);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, id_);
+    for (int i = 0; i < 6; ++i)
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0,
+                     GL_RGBA8, face_size, face_size, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, filter);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, filter);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+    size_ = face_size;
+}
+
+bool CubemapTexture::load_from_atlas(const std::string& path,
+                                     int tile_cols, int tile_rows,
+                                     const int tile_indexes[6]) {
+    Texture atlas;
+    if (!atlas.load_from_file(path, GL_LINEAR)) {
+        std::cerr << "CubemapTexture: failed to load " << path << std::endl;
+        return false;
+    }
+    if (tile_cols <= 0 || tile_rows <= 0) {
+        std::cerr << "tile_cols <= 0 || tile_rows <= 0" << std::endl;
+        return false;
+    }
+
+    const int tile_w = atlas.width()  / tile_cols;
+    const int tile_h = atlas.height() / tile_rows;
+    if (tile_w <= 0 || tile_h <= 0) {
+        std::cerr << "tile_w <= 0 || tile_h <= 0" << std::endl;
+        return false;
+    }
+
+    const int face_size = std::min(tile_w, tile_h);
+    create(face_size, GL_LINEAR);
+
+    Fbo fbo(face_size, face_size, FboKind::Empty);
+    SpriteRenderer blitter;
+    blitter.init();
+
+    GLint saved_vp[4];
+    glGetIntegerv(GL_VIEWPORT, saved_vp);
+
+    for (int face = 0; face < 6; ++face) {
+        const int tile = tile_indexes[face];
+        const int tx = tile % tile_cols;
+        const int ty = tile / tile_cols;
+
+        const float u0 = float(tx * tile_w) / atlas.width();
+        const float v0 = float(ty * tile_h) / atlas.height();
+        const float u1 = float((tx + 1) * tile_w) / atlas.width();
+        const float v1 = float((ty + 1) * tile_h) / atlas.height();
+
+        // GL-spec flips per face, XORed with the global user flips
+        const bool is_top_bottom = (face == 2 || face == 3);
+        const bool flip_u = !is_top_bottom;
+        const bool flip_v = is_top_bottom;
+
+        const float ua = flip_u ? u1 : u0;
+        const float ub = flip_u ? u0 : u1;
+        const float va = flip_v ? v1 : v0;
+        const float vb = flip_v ? v0 : v1;
+
+        fbo.attach_cubemap_face(id_, face);
+        fbo.bind();
+        glViewport(0, 0, face_size, face_size);
+        glClearColor(0, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        blitter.draw_tile(atlas.id(), ua, va, ub, vb);
+    }
+
+    Fbo::unbind();
+    blitter.reset();
+    glViewport(saved_vp[0], saved_vp[1], saved_vp[2], saved_vp[3]);
+    return true;
+}
+
+void CubemapTexture::bind(int unit) const {
+    glActiveTexture(GL_TEXTURE0 + unit);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, id_);
+}
+
+void CubemapTexture::unbind() { glBindTexture(GL_TEXTURE_CUBE_MAP, 0); }
+
+void CubemapTexture::reset() {
+    if (id_) glDeleteTextures(1, &id_);
+    id_ = 0;
+    size_ = 0;
+}
+
+
+// --- SkyBox ---
+
+const char* kSkyBoxVertexSrc = R"(
+#version 330 core
+layout(location = 0) in vec3 aPos;
+
+uniform mat4 uProjViewRot;   // projection * view (rotation only)
+out vec3 vDir;
+
+void main() {
+    vDir = aPos;
+    vec4 pos = uProjViewRot * vec4(aPos, 1.0);
+    gl_Position = pos.xyww;   // force depth = w, so z/w = 1.0 (far plane)
+}
+)";
+
+const char* kSkyBoxFragmentSrc = R"(
+#version 330 core
+in vec3 vDir;
+uniform samplerCube uSkybox;
+out vec4 FragColor;
+
+void main() {
+    FragColor = texture(uSkybox, vDir);
+}
+)";
+
+SkyBox::~SkyBox() { reset(); }
+
+void SkyBox::init() {
+    reset();
+
+    program_ = ShaderProgram(kSkyBoxVertexSrc, kSkyBoxFragmentSrc);
+    proj_view_loc_ = program_.uniform_location("uProjViewRot");
+    cube_loc_      = program_.uniform_location("uSkybox");
+
+    // Unit cube, CCW when viewed from inside, so GL_CULL_FACE/BACK culls
+    // the far side of the cube; depth is forced to 1.0 in the shader so
+    // only untouched pixels get the skybox
+    float vertices[] = {
+        // pos (x,y,z)
+        -1, -1, -1,
+         1, -1, -1,
+         1, -1,  1,
+        -1, -1,  1,
+        -1,  1, -1,
+         1,  1, -1,
+         1,  1,  1,
+        -1,  1,  1,
+    };
+    unsigned int indices[] = {
+        0, 2, 1,  0, 3, 2,  // bottom
+        0, 1, 4,  1, 5, 4,  // front
+        1, 2, 5,  2, 6, 5,  // right
+        2, 3, 7,  2, 7, 6,  // back
+        3, 0, 7,  0, 4, 7,  // left
+        4, 5, 7,  5, 6, 7,  // top
+    };
+    mesh_.upload(vertices, 8, 3, indices, 36, {
+        {0, 3, 0}, // aPos: 3 components, offset 0
+    });
+}
+
+void SkyBox::reset() {
+    mesh_.reset();
+    program_.reset();
+    proj_view_loc_ = -1;
+    cube_loc_ = -1;
+}
+
+void SkyBox::draw(const Matrix<double>& proj_view_rot, const CubemapTexture& cube) {
+    if (!valid() || !cube.valid())
+        return;
+
+    // Late-skybox: keep GL_DEPTH_TEST enabled, switch comparator to LEQUAL.
+    // The shader emits gl_Position = pos.xyww, so z_ndc = 1.0 for every
+    // fragment. Depth buffer is cleared to 1.0, so LEQUAL passes only where
+    // no geometry has written yet. Depth writes are harmless (1.0 -> 1.0).
+    glDepthFunc(GL_LEQUAL);
+
+    program_.use();
+
+    float pv_f[16];
+    for (std::size_t i = 0; i < 16; ++i)
+        pv_f[i] = static_cast<float>(proj_view_rot.data()[i]);
+    glUniformMatrix4fv(proj_view_loc_, 1, GL_TRUE, pv_f);
+
+    glUniform1i(cube_loc_, 0);
+    cube.bind(0);
+
+    mesh_.draw();
+
+    CubemapTexture::unbind();
+    glDepthFunc(GL_LESS); // restore default for the next frame
 }
 
 
