@@ -722,26 +722,39 @@ namespace {
 
 const char* kSurfaceVertexSrc = R"(
 #version 330 core
+
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aColor;
+layout(location = 2) in vec3 aNormal;
 
 uniform mat4 uProjView;
+uniform mat4 uView;
 
+out vec3 vNormalView;
 out vec3 vColor;
 
 void main() {
     gl_Position = uProjView * vec4(aPos, 1.0);
+    vNormalView = mat3(uView) * aNormal;
     vColor = aColor;
 }
 )";
 
 const char* kSurfaceFragmentSrc = R"(
 #version 330 core
+
+in vec3 vNormalView;
 in vec3 vColor;
+
+uniform sampler2D uMatCap;
+
 out vec4 FragColor;
 
 void main() {
-    FragColor = vec4(vColor, 1.0);
+    vec3 N = normalize(vNormalView);
+    vec2 uv = N.xy * 0.5 + vec2(0.5);
+    uv.y = 1.0 - uv.y;
+    FragColor = vec4(texture(uMatCap, uv).rgb, 1.0);
 }
 )";
 
@@ -754,12 +767,16 @@ void Surfaces::init() {
 
     program_ = ShaderProgram(kSurfaceVertexSrc, kSurfaceFragmentSrc);
     proj_view_loc_ = program_.uniform_location("uProjView");
+    view_loc_      = program_.uniform_location("uView");
+    matcap_loc_    = program_.uniform_location("uMatCap");
 }
 
 void Surfaces::reset() {
     mesh_.reset();
     program_.reset();
     proj_view_loc_ = -1;
+    view_loc_      = -1;
+    matcap_loc_    = -1;
 }
 
 void Surfaces::upload(const geom::RenderMesh& m) {
@@ -768,21 +785,33 @@ void Surfaces::upload(const geom::RenderMesh& m) {
         return;
     }
     mesh_.upload(m.vertices.data(),
-                 m.vertices.size() / RenderMesh::floats_per_vertex,
-                 RenderMesh::floats_per_vertex,
-                 m.indices.data(), m.indices.size(),
-                 { {0, 3, 0}, {1, 3, 3} });
+             m.vertices.size() / RenderMesh::floats_per_vertex,
+             RenderMesh::floats_per_vertex,
+             m.indices.data(), m.indices.size(),
+             {
+                 {0, 3, 0},   // position
+                 {1, 3, 3},   // color
+                 {2, 3, 6},   // normal
+             });
 }
 
-void Surfaces::draw(const Matrix<double>& proj_view) const {
+void Surfaces::draw(const Matrix<double>& proj_view,
+                    const Matrix<double>& view,
+                    const Texture& matcap) const {
     if (!valid()) return;
-
     program_.use();
-
     float pv_f[16];
     for (std::size_t i = 0; i < 16; ++i)
         pv_f[i] = static_cast<float>(proj_view.data()[i]);
     glUniformMatrix4fv(proj_view_loc_, 1, GL_TRUE, pv_f);
+
+    float view_f[16];
+    for (std::size_t i = 0; i < 16; ++i)
+        view_f[i] = static_cast<float>(view.data()[i]);
+    glUniformMatrix4fv(view_loc_, 1, GL_TRUE, view_f);
+
+    matcap.bind(0);
+    glUniform1i(matcap_loc_, 0);
 
     mesh_.draw();
 }

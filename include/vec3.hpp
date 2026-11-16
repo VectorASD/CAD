@@ -81,6 +81,22 @@ inline double lengthApprox(const Vec3<S>& v) {
     return std::sqrt(static_cast<double>(v.squaredLength()));
 }
 
+// Approximate unit vector. Same reasoning as lengthApprox: sqrt leaves
+// the Scalar domain, so this returns Vec3<double> and requires a type
+// convertible to double. Zero-length (or near-zero) input returns
+// `fallback`, so a degenerate normal still points somewhere useful
+// instead of producing NaN.
+template<DoubleConvertible S>
+inline Vec3<double> normalizeApprox(const Vec3<S>& v, const Vec3<double>& fallback = {0.0, 1.0, 0.0}) {
+    const double len = lengthApprox(v);
+    if (len < 1e-12)
+        return fallback;
+    const double inv = 1.0 / len;
+    return {static_cast<double>(v.x) * inv,
+            static_cast<double>(v.y) * inv,
+            static_cast<double>(v.z) * inv};
+}
+
 // Approximate conversion to a double-based Vec3. Lossy by design:
 // Fraction<int>, mpq_class, etc. do not fit into double, but rendering,
 // tessellation and SVG output do. This is the explicit boundary between

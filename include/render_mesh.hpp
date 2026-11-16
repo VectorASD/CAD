@@ -14,7 +14,7 @@ struct RenderMesh {
     std::vector<float>         vertices;
     std::vector<std::uint32_t> indices;
 
-    static constexpr std::size_t floats_per_vertex = 6;
+    static constexpr std::size_t floats_per_vertex = 9;
 };
 
 } // namespace geom

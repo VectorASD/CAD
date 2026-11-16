@@ -51,34 +51,57 @@ public:
             for (std::size_t j = 0; j <= E; ++j)
                 gd[i][j] = to_double(grid_[i][j]);
 
-        RenderMesh m;
-        m.vertices.reserve((nu + 1) * (nv + 1) * RenderMesh::floats_per_vertex);
-        m.indices.reserve(nu * nv * 6);
-
+        // Pre-evaluate the position grid once; normals reuse neighbors
+        std::vector<Vec3<double>> pos((nu + 1) * (nv + 1));
         for (std::size_t j = 0; j <= nv; ++j) {
             const double v = static_cast<double>(j) / static_cast<double>(nv);
 
-            // Collapse along v first: gd[ii] is a v-slice, no copy needed
             std::array<Vec3<double>, D + 1> row;
             for (std::size_t ii = 0; ii <= D; ++ii)
                 row[ii] = bezier<E>(gd[ii], v);
 
             for (std::size_t i = 0; i <= nu; ++i) {
                 const double u = static_cast<double>(i) / static_cast<double>(nu);
-                const Vec3<double> p = bezier<D>(row, u);
-                // Computing p                          - tessellation
-                // Connecting the points into triangles - triangulation
-
-                m.vertices.push_back(static_cast<float>(p.x));
-                m.vertices.push_back(static_cast<float>(p.y));
-                m.vertices.push_back(static_cast<float>(p.z));
-                m.vertices.push_back(static_cast<float>(u));
-                m.vertices.push_back(static_cast<float>(v));
-                m.vertices.push_back(0.2f);
+                pos[j * (nu + 1) + i] = bezier<D>(row, u);
             }
         }
 
-        // Vertex order is now v-major: index = j*(nu+1) + i
+        RenderMesh m;
+        m.vertices.reserve((nu + 1) * (nv + 1) * RenderMesh::floats_per_vertex);
+        m.indices.reserve(nu * nv * 6);
+
+        for (std::size_t j = 0; j <= nv; ++j) {
+            for (std::size_t i = 0; i <= nu; ++i) {
+                const std::size_t idx = j * (nu + 1) + i;
+                const Vec3<double> p = pos[idx];
+
+                const std::size_t i_next = (i < nu) ? i + 1 : i - 1;
+                const Vec3<double> p_u = pos[j * (nu + 1) + i_next];
+                const Vec3<double> du = (i < nu) ? (p_u - p) : (p - p_u);
+
+                const std::size_t j_next = (j < nv) ? j + 1 : j - 1;
+                const Vec3<double> p_v = pos[j_next * (nu + 1) + i];
+                const Vec3<double> dv = (j < nv) ? (p_v - p) : (p - p_v);
+
+                const Vec3<double> n = normalizeApprox(du.cross(dv));
+
+                const float uf = static_cast<float>(i) / static_cast<float>(nu);
+                const float vf = static_cast<float>(j) / static_cast<float>(nv);
+
+                // [pos, color, normal]
+                m.vertices.push_back(static_cast<float>(p.x));
+                m.vertices.push_back(static_cast<float>(p.y));
+                m.vertices.push_back(static_cast<float>(p.z));
+                m.vertices.push_back(uf);
+                m.vertices.push_back(vf);
+                m.vertices.push_back(0.2f);
+                m.vertices.push_back(static_cast<float>(n.x));
+                m.vertices.push_back(static_cast<float>(n.y));
+                m.vertices.push_back(static_cast<float>(n.z));
+            }
+        }
+
+        // Vertex order: v-major, index = j*(nu+1) + i
         for (std::size_t j = 0; j < nv; ++j) {
             for (std::size_t i = 0; i < nu; ++i) {
                 const std::uint32_t a = static_cast<std::uint32_t>(j * (nu + 1) + i);

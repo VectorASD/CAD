@@ -276,12 +276,16 @@ public:
     bool valid() const { return program_.valid() && mesh_.valid(); }
 
     void upload(const geom::RenderMesh& m);
-    void draw(const Matrix<double>& proj_view) const;
+    void draw(const Matrix<double>& proj_view,
+              const Matrix<double>& view,
+              const Texture& matcap) const;
 
 private:
     ShaderProgram program_;
     Mesh          mesh_;
     int           proj_view_loc_ = -1;
+    int           view_loc_      = -1;
+    int           matcap_loc_    = -1;
 };
 
 } // namespace geom::render

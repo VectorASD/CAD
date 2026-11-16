@@ -48,10 +48,11 @@ DragState drag_;
 OSMesaContext ctx = nullptr;
 unsigned char* osmesa_buffer = nullptr;
 
-Fbo            g_fbo;
-Markers        g_markers;
-Surfaces       g_surfaces;
-SkyBox         g_skybox;
+Fbo      g_fbo;
+Markers  g_markers;
+Surfaces g_surfaces;
+Texture  g_matcap;
+SkyBox   g_skybox;
 std::vector<CubemapTexture> g_skybox_textures;
 std::atomic<int>            g_skybox_current{0};
 
@@ -153,6 +154,12 @@ void init() {
         g_surfaces.upload(surface.tessellate(20, 20));
     }
 
+    if (!g_matcap.load_from_file("assets/matcaps/17395A_7EBCC7_4D8B9F_65A1B5.png", GL_LINEAR)) {
+        std::cerr << "matcap not loaded, using gray fallback" << std::endl;
+        const std::uint8_t gray[4] = {180, 180, 180, 255};
+        g_matcap.create(1, 1, GL_NEAREST, gray);
+    }
+
     std::string SCRIPT_DIR = "/home/vectorasd/CAD/";
     {
         const int space_faces[] = { 4, 6, 3, 11, 5, 7 };
@@ -180,6 +187,7 @@ void shutdown() {
 
     g_markers.reset();
     g_surfaces.reset();
+    g_matcap.reset();
     g_fbo.reset();
 
     if (ctx)
@@ -326,7 +334,7 @@ const std::uint8_t* render_frame() {
 
     // Opaque geometry first
     g_markers.draw(camera.proj_view());
-    g_surfaces.draw(camera.proj_view());
+    g_surfaces.draw(camera.proj_view(), camera.view(), g_matcap);
 
     // Skybox last: GL_LEQUAL + z=w means it fills only untouched pixels
     const int skybox_idx = g_skybox_current.load();
