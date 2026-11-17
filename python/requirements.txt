@@ -14,3 +14,4 @@
 av
 pysdl3
 numpy
+pygame

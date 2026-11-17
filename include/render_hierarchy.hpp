@@ -21,6 +21,7 @@ struct RenderContext {
     const Matrix<double>& proj;
     const Matrix<double>& view;
     const Matrix<double>& proj_view;
+    bool wireframe = false;
 };
 
 
@@ -192,7 +193,7 @@ protected:
             std::cerr << "SurfacesNode: matcap not set" << std::endl;
             return;
         }
-        surfaces_->draw(ctx.proj_view, ctx.view, world(), *matcap_);
+        surfaces_->draw(ctx.proj_view, ctx.view, world(), *matcap_, ctx.wireframe);
     }
 
 private:

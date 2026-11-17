@@ -53,7 +53,9 @@ OSMesaContext ctx = nullptr;
 unsigned char* osmesa_buffer = nullptr;
 
 std::unique_ptr<Node> g_scene;
-FboNode*    g_root_fbo = nullptr;
+FboNode*              g_root_fbo = nullptr;
+std::atomic<bool>     g_wireframe{false};
+std::atomic<bool>     g_teapot_rotor{true};
 
 int g_width  = DEFAULT_WIDTH;
 int g_height = DEFAULT_HEIGHT;
@@ -294,6 +296,15 @@ void apply_camera_input(double td) {
             g_scene->visit<SkyBoxNode>([](SkyBoxNode& sb) { sb.cycle(); });
     }
 
+    if (key_state['z']) {
+        key_state['z'] = false;
+        g_wireframe = !g_wireframe;
+    }
+    if (key_state['x']) {
+        key_state['x'] = false;
+        g_teapot_rotor = !g_teapot_rotor;
+    }
+
     double ax_fwd = 0.0, ax_right = 0.0, ax_up = 0.0;
 
     if (key_state['w'] || key_state[SC_UP])    ax_fwd   += 1.0;
@@ -346,16 +357,18 @@ const std::uint8_t* render_frame() {
     if (td > 0.1) td = 0.1;
 
     // Animate tagged transform nodes
-    static double teapot_angle = 0.0;
-    teapot_angle = std::fmod(teapot_angle + td * -30.0, 360.0);
-    if (g_scene)
-        if (auto* teapot_spin = g_scene->find_by_tag<TransformNode>("teapot_spin"))
-            teapot_spin->set_local(Matrix<double>::rotation_y(teapot_angle));
+    if (g_teapot_rotor) {
+        static double teapot_angle = 0.0;
+        teapot_angle = std::fmod(teapot_angle + td * -30.0, 360.0);
+        if (g_scene)
+            if (auto* teapot_spin = g_scene->find_by_tag<TransformNode>("teapot_spin"))
+                teapot_spin->set_local(Matrix<double>::rotation_y(teapot_angle));
+    }
 
     apply_camera_input(td);
 
     if (g_scene) {
-        RenderContext rctx{camera.proj(), camera.view(), camera.proj_view()};
+        RenderContext rctx { camera.proj(), camera.view(), camera.proj_view(), g_wireframe };
         g_scene->draw(rctx);
     }
     if (g_root_fbo) g_root_fbo->read_pixels(pixels.data());

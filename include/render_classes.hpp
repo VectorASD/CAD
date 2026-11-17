@@ -297,7 +297,8 @@ public:
     void draw(const Matrix<double>& proj_view,
               const Matrix<double>& view,
               const Matrix<double>& model,
-              const Texture& matcap) const;
+              const Texture& matcap,
+              bool wireframe) const;
 
 private:
     struct Shared {

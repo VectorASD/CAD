@@ -837,9 +837,16 @@ void Surfaces::upload(const geom::RenderMesh& m) {
 void Surfaces::draw(const Matrix<double>& proj_view,
                     const Matrix<double>& view,
                     const Matrix<double>& model,
-                    const Texture& matcap) const {
+                    const Texture& matcap,
+                    bool wireframe) const {
     if (!valid())
         return;
+
+    GLint prev_polygon_mode[2];
+    if (wireframe) {
+        glGetIntegerv(GL_POLYGON_MODE, prev_polygon_mode);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    }
 
     shared_.program.use();
     set_mat4(shared_.proj_view_loc, proj_view);
@@ -850,6 +857,9 @@ void Surfaces::draw(const Matrix<double>& proj_view,
     glUniform1i(shared_.matcap_loc, 0);
 
     mesh_.draw();
+
+    if (wireframe)
+        glPolygonMode(GL_FRONT_AND_BACK, static_cast<GLenum>(prev_polygon_mode[0]));
 }
 
 } // namespace geom::render

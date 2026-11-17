@@ -6,10 +6,8 @@
 # while-loop never gets a chance to run. SDL3's main callbacks invoke
 # SDL_AppEvent and SDL_AppIterate even inside that modal loop, so we can
 # react to resize and render the video stream live while the user drags.
-
 import os
 os.environ["SDL_MAIN_USE_CALLBACKS"] = "1"
-
 import ctypes
 import dataclasses
 import queue
@@ -18,16 +16,13 @@ import struct
 import sys
 import threading
 import time
-
 import numpy as np
 import av
 import sdl3
 
-
 SERVER_IP = "127.0.0.1"
 VIDEO_PORT = 12345
 CONTROL_PORT = 12346
-
 INITIAL_W = 1024
 INITIAL_H = 768
 
@@ -42,12 +37,10 @@ EV_RESIZE     = 5
 # on resize. Tuple assignment is atomic under CPython, so the
 # control thread either sees the old or the new size, never a torn one.
 current_window_size = (INITIAL_W, INITIAL_H)
-
 latest_frame = None
 running = True
 control_socket = None
 control_connected = False
-
 event_queue = queue.Queue(maxsize=200)
 
 KEY_MAP = {
@@ -67,6 +60,25 @@ KEY_MAP = {
     sdl3.SDLK_BACKSPACE: 0xFF08,
 }
 
+# Attempt to load pygame for placeholder text rendering
+# If unavailable, falls back to a white rectangle (still fixes the black screen bug)
+try:
+    import pygame
+    pygame.font.init()
+    _ph_font = pygame.font.SysFont('sans', 100)
+    _text_surf = _ph_font.render("Waiting for server...", True, (255, 255, 255))
+    PH_W, PH_H = _text_surf.get_size()
+    # Create a surface with explicit black background to avoid transparency issues
+    _ph_surf = pygame.Surface((PH_W, PH_H), pygame.SRCALPHA)
+    _ph_surf.fill((0, 0, 0, 255))  # solid black background
+    _ph_surf.blit(_text_surf, (0, 0))
+    PH_PIXELS = pygame.image.tostring(_ph_surf, 'RGBA', False)
+    HAS_FONT = True
+except Exception as e:
+    print(f"Font init failed: {e}")
+    HAS_FONT = False
+    PH_W, PH_H = 200, 30
+    PH_PIXELS = None
 
 def key_to_scancode(key):
     if key in KEY_MAP:
@@ -75,7 +87,6 @@ def key_to_scancode(key):
         return key
     return None
 
-
 def pack_event(ev, a, b):
     if ev in (EV_MOUSE_DOWN, EV_MOUSE_MOVE, EV_MOUSE_UP):
         return struct.pack('>Bii', ev, int(a), int(b))
@@ -83,10 +94,8 @@ def pack_event(ev, a, b):
         return struct.pack('>BHH', ev, int(a) & 0xFFFF, int(b) & 0xFFFF)
     return struct.pack('>BH', ev, int(a) & 0xFFFF)
 
-
 def video_receiver():
     global latest_frame, running
-
     while running:
         video_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         stream = None
@@ -95,7 +104,6 @@ def video_receiver():
             print("Video: Connected to server.")
             codec = av.CodecContext.create("h264", "r")
             stream = video_socket.makefile('rb')
-
             while running:
                 header = stream.read(4)
                 if len(header) < 4:
@@ -104,7 +112,6 @@ def video_receiver():
                 packet_data = stream.read(size)
                 if len(packet_data) < size:
                     break
-
                 packets = codec.parse(packet_data)
                 for packet in packets:
                     try:
@@ -116,7 +123,6 @@ def video_receiver():
                                 frame.to_ndarray(format='bgr24'))
                     except Exception:
                         pass
-
         except ConnectionRefusedError:
             print("Video: Server not available. Retrying in 1s...")
         except Exception as e:
@@ -125,15 +131,12 @@ def video_receiver():
             if stream is not None:
                 stream.close()
             video_socket.close()
-
-        if running:
-            latest_frame = None
-            time.sleep(1.0)
-
+            if running:
+                latest_frame = None
+                time.sleep(1.0)
 
 def control_sender():
     global running, control_connected, control_socket
-
     while running:
         if not control_connected:
             try:
@@ -154,7 +157,6 @@ def control_sender():
                 print(f"Control: Error - {e}")
                 time.sleep(1.0)
                 continue
-
         try:
             ev, a, b = event_queue.get(timeout=0.1)
             control_socket.sendall(pack_event(ev, a, b))
@@ -167,24 +169,25 @@ def control_sender():
                 control_socket.close()
                 control_socket = None
 
-
 @dataclasses.dataclass
 class AppState:
     window: ctypes.POINTER(sdl3.SDL_Window)  # type: ignore[valid-type]
     renderer: ctypes.POINTER(sdl3.SDL_Renderer)  # type: ignore[valid-type]
     texture: ctypes.POINTER(sdl3.SDL_Texture) = None  # type: ignore[valid-type]
+    placeholder_tex: ctypes.POINTER(sdl3.SDL_Texture) = None  # type: ignore[valid-type]
     tex_w: int = 0
     tex_h: int = 0
     mouse_down: bool = False
     pressed_keys: set = dataclasses.field(default_factory=set)
 
-
 app_state: AppState = None
-
 
 @sdl3.SDL_AppInit_func
 def SDL_AppInit(c_appstate, argc, argv):
     global app_state
+
+    # Force SDL to not wait for vsync, which can block iteration on unfocused windows
+    sdl3.SDL_SetHint(b"SDL_HINT_RENDER_VSYNC", b"0")
 
     if not sdl3.SDL_Init(sdl3.SDL_INIT_VIDEO):
         print("SDL_Init failed:", sdl3.SDL_GetError().decode())
@@ -194,12 +197,18 @@ def SDL_AppInit(c_appstate, argc, argv):
     p_renderer = ctypes.POINTER(sdl3.SDL_Renderer)()
 
     if not sdl3.SDL_CreateWindowAndRenderer(
-            b"CAD Stream", INITIAL_W, INITIAL_H,
-            sdl3.SDL_WINDOW_RESIZABLE,
-            ctypes.pointer(p_window), ctypes.pointer(p_renderer)):
+        b"CAD Stream", INITIAL_W, INITIAL_H,
+        sdl3.SDL_WINDOW_RESIZABLE,
+        ctypes.pointer(p_window), ctypes.pointer(p_renderer)):
         print("SDL_CreateWindowAndRenderer failed:",
               sdl3.SDL_GetError().decode())
         return sdl3.SDL_APP_FAILURE
+
+    # Explicitly disable vsync on the renderer itself to ensure non-blocking presents
+    sdl3.SDL_SetRenderVSync(p_renderer, 0)
+
+    # Raise window to ensure it gets focus and starts receiving events immediately
+    sdl3.SDL_RaiseWindow(p_window)
 
     texture = sdl3.SDL_CreateTexture(
         p_renderer,
@@ -215,32 +224,42 @@ def SDL_AppInit(c_appstate, argc, argv):
         tex_h=1,
     )
     app_state = state
+
     c_appstate[0] = ctypes.cast(
         ctypes.pointer(ctypes.py_object(state)), ctypes.c_void_p)
+
+    if HAS_FONT:
+        state.placeholder_tex = sdl3.SDL_CreateTexture(
+            p_renderer,
+            sdl3.SDL_PIXELFORMAT_RGBA8888,
+            sdl3.SDL_TEXTUREACCESS_STATIC,
+            PH_W, PH_H)
+        sdl3.SDL_UpdateTexture(state.placeholder_tex, None, PH_PIXELS, PH_W * 4)
+    else:
+        state.placeholder_tex = None
+
+    # Push a dummy event to jumpstart the callback loop if it's stuck waiting
+    dummy_event = sdl3.SDL_Event()
+    dummy_event.type = sdl3.SDL_EVENT_USER
+    sdl3.SDL_PushEvent(ctypes.byref(dummy_event))
 
     threading.Thread(target=video_receiver, daemon=True).start()
     threading.Thread(target=control_sender, daemon=True).start()
 
     return sdl3.SDL_APP_CONTINUE
 
-
 @sdl3.SDL_AppEvent_func
 def SDL_AppEvent(c_appstate, c_event):
     global running, current_window_size
-
     event = c_event.contents
     st = app_state
 
     if event.type == sdl3.SDL_EVENT_QUIT:
         running = False
         return sdl3.SDL_APP_SUCCESS
-
     elif event.type == sdl3.SDL_EVENT_WINDOW_CLOSE_REQUESTED:
-        # Defensive: if SDL doesn't fire SDL_EVENT_QUIT for some close
-        # path, this catches it and stops the loop anyway
         running = False
         return sdl3.SDL_APP_SUCCESS
-
     elif event.type == sdl3.SDL_EVENT_WINDOW_RESIZED:
         # H.264 4:2:0 requires even dimensions
         w = event.window.data1 & ~1
@@ -251,7 +270,6 @@ def SDL_AppEvent(c_appstate, c_event):
                 event_queue.put_nowait((EV_RESIZE, w, h))
             except queue.Full:
                 pass
-
     elif event.type == sdl3.SDL_EVENT_KEY_DOWN:
         key = event.key.key
         if key == sdl3.SDLK_ESCAPE:
@@ -264,7 +282,6 @@ def SDL_AppEvent(c_appstate, c_event):
                 event_queue.put_nowait((EV_KEY_DOWN, sc, 0))
             except queue.Full:
                 pass
-
     elif event.type == sdl3.SDL_EVENT_KEY_UP:
         key = event.key.key
         sc = key_to_scancode(key)
@@ -274,7 +291,6 @@ def SDL_AppEvent(c_appstate, c_event):
                 event_queue.put_nowait((EV_KEY_UP, sc, 0))
             except queue.Full:
                 pass
-
     elif event.type == sdl3.SDL_EVENT_MOUSE_BUTTON_DOWN:
         if event.button.button == sdl3.SDL_BUTTON_LEFT:
             st.mouse_down = True
@@ -284,7 +300,6 @@ def SDL_AppEvent(c_appstate, c_event):
                                         int(event.button.y)))
             except queue.Full:
                 pass
-
     elif event.type == sdl3.SDL_EVENT_MOUSE_BUTTON_UP:
         if event.button.button == sdl3.SDL_BUTTON_LEFT:
             st.mouse_down = False
@@ -294,7 +309,6 @@ def SDL_AppEvent(c_appstate, c_event):
                                         int(event.button.y)))
             except queue.Full:
                 pass
-
     elif event.type == sdl3.SDL_EVENT_MOUSE_MOTION:
         if st.mouse_down:
             try:
@@ -306,13 +320,15 @@ def SDL_AppEvent(c_appstate, c_event):
 
     return sdl3.SDL_APP_CONTINUE
 
-
 @sdl3.SDL_AppIterate_func
 def SDL_AppIterate(c_appstate):
     global latest_frame
-
     st = app_state
     renderer = st.renderer
+
+    # Always clear and present, fixing the "black screen until touched" bug
+    sdl3.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255)
+    sdl3.SDL_RenderClear(renderer)
 
     frame = latest_frame
     if frame is not None:
@@ -325,27 +341,41 @@ def SDL_AppIterate(c_appstate):
                 sdl3.SDL_TEXTUREACCESS_STREAMING,
                 w, h)
             st.tex_w, st.tex_h = w, h
-
         pixels_ptr = frame.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
         sdl3.SDL_UpdateTexture(st.texture, None, pixels_ptr, w * 3)
-
-    sdl3.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255)
-    sdl3.SDL_RenderClear(renderer)
-
-    if frame is not None:
         sdl3.SDL_RenderTexture(renderer, st.texture, None, None)
+    else:
+        # Draw placeholder when waiting for server
+        if HAS_FONT and st.placeholder_tex:
+            w = ctypes.c_int(0)
+            h = ctypes.c_int(0)
+            sdl3.SDL_GetWindowSize(st.window, ctypes.byref(w), ctypes.byref(h))
+            win_w, win_h = w.value, h.value
+            try:
+                rect = sdl3.SDL_FRect()
+                rect.x = (win_w - PH_W) / 2.0
+                rect.y = (win_h - PH_H) / 2.0
+                rect.w = float(PH_W)
+                rect.h = float(PH_H)
+                sdl3.SDL_RenderTexture(renderer, st.placeholder_tex, None, ctypes.byref(rect))
+            except Exception:
+                # Fallback to a white rectangle if SDL_FRect is unavailable
+                r = sdl3.SDL_Rect()
+                r.x = (win_w - PH_W) // 2
+                r.y = (win_h - PH_H) // 2
+                r.w = PH_W
+                r.h = PH_H
+                sdl3.SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255)
+                sdl3.SDL_RenderFillRect(renderer, ctypes.byref(r))
 
     sdl3.SDL_RenderPresent(renderer)
     return sdl3.SDL_APP_CONTINUE
 
-
 @sdl3.SDL_AppQuit_func
 def SDL_AppQuit(c_appstate, result):
     global running, control_socket
-
     running = False
     time.sleep(0.05)
-
     if control_socket:
         try:
             for sc in list(app_state.pressed_keys):
@@ -358,16 +388,16 @@ def SDL_AppQuit(c_appstate, result):
             pass
         control_socket.close()
 
+    if hasattr(app_state, 'placeholder_tex') and app_state.placeholder_tex:
+        sdl3.SDL_DestroyTexture(app_state.placeholder_tex)
     sdl3.SDL_DestroyTexture(app_state.texture)
     sdl3.SDL_DestroyRenderer(app_state.renderer)
     sdl3.SDL_DestroyWindow(app_state.window)
     sdl3.SDL_Quit()
 
-
 def main():
     argv = [a.encode() for a in sys.argv]
     c_args = (ctypes.c_char_p * len(argv))(*argv)
-
     result = sdl3.SDL_EnterAppMainCallbacks(
         ctypes.c_int(len(argv)),
         c_args,
@@ -375,7 +405,6 @@ def main():
         SDL_AppIterate,
         SDL_AppEvent,
         SDL_AppQuit)
-
     return result
 
 if __name__ == "__main__":
