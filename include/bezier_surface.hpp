@@ -22,23 +22,15 @@ public:
 
 private:
     Grid grid_{};
+    bool flip_;
 
 public:
     BezierSurface() = default;
-    explicit BezierSurface(Grid grid) : grid_(std::move(grid)) {}
+    explicit BezierSurface(Grid grid, bool flip = false)
+        : grid_(std::move(grid)), flip_(flip) {}
 
     const Grid& grid() const { return grid_; }
-
-    // Exact evaluation in S
-    Vec3<S> eval(const S& u, const S& v) const {
-        std::array<Vec3<S>, E + 1> column;
-        for (std::size_t j = 0; j <= E; ++j) {
-            std::array<Vec3<S>, D + 1> row;
-            for (std::size_t i = 0; i <= D; ++i) row[i] = grid_[i][j];
-            column[j] = bezier<D>(row, u);
-        }
-        return bezier<E>(column, v);
-    }
+    bool flipped() const { return flip_; }
 
     // Produce a render-side mesh. nu * nv cells, 2 triangles each
     RenderMesh tessellate(std::size_t nu, std::size_t nv) const
@@ -83,7 +75,8 @@ public:
                 const Vec3<double> p_v = pos[j_next * (nu + 1) + i];
                 const Vec3<double> dv = (j < nv) ? (p_v - p) : (p - p_v);
 
-                const Vec3<double> n = normalizeApprox(du.cross(dv));
+                const Vec3<double> cross = flip_ ? dv.cross(du) : du.cross(dv);
+                const Vec3<double> n = normalizeApprox(cross);
 
                 const float uf = static_cast<float>(i) / static_cast<float>(nu);
                 const float vf = static_cast<float>(j) / static_cast<float>(nv);
@@ -108,7 +101,10 @@ public:
                 const std::uint32_t b = static_cast<std::uint32_t>(j * (nu + 1) + i + 1);
                 const std::uint32_t c = static_cast<std::uint32_t>((j + 1) * (nu + 1) + i + 1);
                 const std::uint32_t d = static_cast<std::uint32_t>((j + 1) * (nu + 1) + i);
-                m.indices.insert(m.indices.end(), { a, b, c, a, c, d });
+                if (flip_)
+                    m.indices.insert(m.indices.end(), { a, c, b, a, d, c });
+                else
+                    m.indices.insert(m.indices.end(), { a, b, c, a, c, d });
             }
         }
         return m;

@@ -78,7 +78,7 @@ public:
         update_proj_view();
     }
     void rotate(double dY, double dP, double dR) {
-        ypr_ = {ypr_.x + dY, std::clamp(ypr_.y + dP, -75.0, 75.0), ypr_.z + dR};
+        ypr_ = {ypr_.x + dY, std::clamp(ypr_.y + dP, -85.0, 85.0), ypr_.z + dR};
         update_proj_view();
     }
     void move_forward(double dt) {

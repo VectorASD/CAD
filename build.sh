@@ -163,6 +163,7 @@ compile render/render
 compile render/render_classes
 compile render/stream
 compile image_loader
+compile bpt
 
 echo "  CC   render/glad.c"
 "${CC_C[@]}" -I"$INCLUDE" -O3 -g -Wall \
@@ -176,6 +177,7 @@ echo "  LD   graphics_server"
     "$OBJ/render/stream.o" \
     "$OBJ/render/glad.o" \
     "$OBJ/image_loader.o" \
+    "$OBJ/bpt.o" \
     -lOSMesa -lavcodec -lavutil -lswscale -lpthread
 
 echo "  STRIP graphics_server"

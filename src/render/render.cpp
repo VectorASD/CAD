@@ -6,7 +6,9 @@
 #include "fraction.hpp"
 
 // render
+#include "bpt.hpp"
 #include "camera.hpp"
+#include "matrix.hpp"
 #include "render_classes.hpp"
 
 #include <glad/glad.h>
@@ -50,7 +52,9 @@ unsigned char* osmesa_buffer = nullptr;
 
 Fbo      g_fbo;
 Markers  g_markers;
+Markers  g_markers2;
 Surfaces g_surfaces;
+Surfaces g_surfaces_teapot;
 Texture  g_matcap;
 SkyBox   g_skybox;
 std::vector<CubemapTexture> g_skybox_textures;
@@ -104,14 +108,12 @@ void init() {
     flipped.resize(g_width * g_height * 4);
 
     g_fbo = Fbo(g_width, g_height);
-    g_markers.init();
 
     using S = Fraction<int>;
     using V = Vec3<S>;
-
-    std::vector<Marker> markers;
-
     {
+        std::vector<Marker> markers;
+
         // --- 33 points on a cubic Bezier curve (degree 3) in 3D ---
         const std::array<V, 4> curve_ctrl = {
             V(S(-1), S( 0), S(-1)),
@@ -129,6 +131,11 @@ void init() {
                 .scale    = 0.05,
             });
         }
+        g_markers.init();
+        g_markers.set(markers);
+    }
+    {
+        std::vector<Marker> markers;
 
         // --- 4x4 control points of the Bezier surface ---
         BezierSurface<3, 3, S>::Grid grid = {{
@@ -149,9 +156,17 @@ void init() {
 
         BezierSurface<3, 3, S> surface(grid);
 
-        g_markers.set(markers);
+        g_markers2.init();
+        g_markers2.set(markers);
         g_surfaces.init();
         g_surfaces.upload(surface.tessellate(20, 20));
+    }
+    {
+        auto model = geom::load_bpt("assets/models/teapotCGA.bpt", true);
+        if (!model.patches.empty()) {
+            g_surfaces_teapot.init();
+            g_surfaces_teapot.upload(geom::tessellate_model(model, 8, 8));
+        }
     }
 
     if (!g_matcap.load_from_file("assets/matcaps/17395A_7EBCC7_4D8B9F_65A1B5.png", GL_LINEAR)) {
@@ -186,7 +201,9 @@ void shutdown() {
     g_skybox_current.store(0);
 
     g_markers.reset();
+    g_markers2.reset();
     g_surfaces.reset();
+    g_surfaces_teapot.reset();
     g_matcap.reset();
     g_fbo.reset();
 
@@ -296,13 +313,6 @@ void apply_camera_input(double td) {
 } // anonymous namespace
 
 
-void set_markers(const std::vector<Marker>& markers) {
-    g_markers.set(markers);
-}
-void clear_markers() {
-    g_markers.clear();
-}
-
 const std::uint8_t* render_frame() {
     std::lock_guard<std::mutex> lock(camera_mutex);
 
@@ -333,8 +343,15 @@ const std::uint8_t* render_frame() {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     // Opaque geometry first
-    g_markers.draw(camera.proj_view());
-    g_surfaces.draw(camera.proj_view(), camera.view(), g_matcap);
+    static const Matrix<double> I = Matrix<double>::identity(4);
+    static const Matrix<double> surf_mat = Matrix<double>::translation(1.5, 0, -1.5);
+    static const Matrix<double> teapot_mat =
+        Matrix<double>::rotation_x(-90) * Matrix<double>::translation(8, 0, 0);
+
+    g_markers.draw(camera.proj_view(), I);
+    g_markers2.draw(camera.proj_view(), surf_mat);
+    g_surfaces.draw(camera.proj_view(), camera.view(), surf_mat, g_matcap);
+    g_surfaces_teapot.draw(camera.proj_view(), camera.view(), teapot_mat, g_matcap);
 
     // Skybox last: GL_LEQUAL + z=w means it fills only untouched pixels
     const int skybox_idx = g_skybox_current.load();

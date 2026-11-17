@@ -29,6 +29,11 @@ GLuint compile_stage(GLenum type, const char* source) {
     return shader;
 }
 
+void set_mat4(GLint loc, const Matrix<double>& m) {
+    const auto f = m.to_floats();
+    glUniformMatrix4fv(loc, 1, GL_TRUE, f.data());
+}
+
 } // anonymous namespace
 
 
@@ -229,7 +234,9 @@ void Mesh::upload(const float* vertices, std::size_t vertex_count,
 }
 
 void Mesh::draw() const {
-    if (!valid()) return;
+    if (!valid())
+        return;
+
     glBindVertexArray(vao_);
     glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(index_count_),
                    GL_UNSIGNED_INT, nullptr);
@@ -312,17 +319,18 @@ void SpriteRenderer::draw_tile(unsigned int tex_id,
     const GLboolean was_cull  = glIsEnabled(GL_CULL_FACE);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
+    {
+        program_.use();
+        glUniform1i(tex_loc_, 0);
+        glUniform4f(uv_range_loc_, u0, v0, u1, v1);
 
-    program_.use();
-    glUniform1i(tex_loc_, 0);
-    glUniform4f(uv_range_loc_, u0, v0, u1, v1);
-
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, tex_id);
-
-    mesh_.draw();
-
-    glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, tex_id);
+        {
+            mesh_.draw();
+        }
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
     if (was_depth) glEnable(GL_DEPTH_TEST);
     if (was_cull)  glEnable(GL_CULL_FACE);
 }
@@ -415,7 +423,7 @@ void Markers::clear() {
     markers_.clear();
 }
 
-void Markers::draw(const Matrix<double>& proj_view) const {
+void Markers::draw(const Matrix<double>& proj_view, const Matrix<double>& model) const {
     if (!valid())
         return;
 
@@ -424,25 +432,19 @@ void Markers::draw(const Matrix<double>& proj_view) const {
         return;
 
     program_.use();
-
-    float pv_f[16];
-    for (std::size_t i = 0; i < 16; ++i)
-        pv_f[i] = static_cast<float>(proj_view.data()[i]);
-    glUniformMatrix4fv(proj_view_loc_, 1, GL_TRUE, pv_f);
+    set_mat4(proj_view_loc_, proj_view);
 
     for (const auto& m : markers_) {
-        const float s = static_cast<float>(m.scale);
-        const float model[16] = {
-            s, 0, 0, static_cast<float>(m.position.x),
-            0, s, 0, static_cast<float>(m.position.y),
-            0, 0, s, static_cast<float>(m.position.z),
-            0, 0, 0, 1.0f,
-        };
-        glUniformMatrix4fv(model_loc_, 1, GL_TRUE, model);
+        const Matrix<double> local =
+            Matrix<double>::translation(m.position.x, m.position.y, m.position.z)
+            * Matrix<double>::scale(m.scale);
+
+        set_mat4(model_loc_, model * local);
         glUniform3f(tint_loc_,
                     static_cast<float>(m.tint.x),
                     static_cast<float>(m.tint.y),
                     static_cast<float>(m.tint.z));
+
         mesh_.draw();
     }
 }
@@ -498,7 +500,8 @@ void Texture::bind(int unit) const {
 void Texture::unbind() { glBindTexture(GL_TEXTURE_2D, 0); }
 
 void Texture::reset() {
-    if (id_) glDeleteTextures(1, &id_);
+    if (id_)
+        glDeleteTextures(1, &id_);
     id_ = 0; width_ = height_ = 0;
 }
 
@@ -698,20 +701,17 @@ void SkyBox::draw(const Matrix<double>& proj_view_rot, const CubemapTexture& cub
     // fragment. Depth buffer is cleared to 1.0, so LEQUAL passes only where
     // no geometry has written yet. Depth writes are harmless (1.0 -> 1.0).
     glDepthFunc(GL_LEQUAL);
+    {
+        program_.use();
+        set_mat4(proj_view_loc_, proj_view_rot);
+        glUniform1i(cube_loc_, 0);
 
-    program_.use();
-
-    float pv_f[16];
-    for (std::size_t i = 0; i < 16; ++i)
-        pv_f[i] = static_cast<float>(proj_view_rot.data()[i]);
-    glUniformMatrix4fv(proj_view_loc_, 1, GL_TRUE, pv_f);
-
-    glUniform1i(cube_loc_, 0);
-    cube.bind(0);
-
-    mesh_.draw();
-
-    CubemapTexture::unbind();
+        cube.bind(0);
+        {
+            mesh_.draw();
+        }
+        CubemapTexture::unbind();
+    }
     glDepthFunc(GL_LESS); // restore default for the next frame
 }
 
@@ -729,13 +729,14 @@ layout(location = 2) in vec3 aNormal;
 
 uniform mat4 uProjView;
 uniform mat4 uView;
+uniform mat4 uModel;
 
 out vec3 vNormalView;
 out vec3 vColor;
 
 void main() {
-    gl_Position = uProjView * vec4(aPos, 1.0);
-    vNormalView = mat3(uView) * aNormal;
+    gl_Position = uProjView * uModel * vec4(aPos, 1.0);
+    vNormalView = mat3(uView) * mat3(uModel) * aNormal;
     vColor = aColor;
 }
 )";
@@ -768,6 +769,7 @@ void Surfaces::init() {
     program_ = ShaderProgram(kSurfaceVertexSrc, kSurfaceFragmentSrc);
     proj_view_loc_ = program_.uniform_location("uProjView");
     view_loc_      = program_.uniform_location("uView");
+    model_loc_     = program_.uniform_location("uModel");
     matcap_loc_    = program_.uniform_location("uMatCap");
 }
 
@@ -797,18 +799,15 @@ void Surfaces::upload(const geom::RenderMesh& m) {
 
 void Surfaces::draw(const Matrix<double>& proj_view,
                     const Matrix<double>& view,
+                    const Matrix<double>& model,
                     const Texture& matcap) const {
-    if (!valid()) return;
-    program_.use();
-    float pv_f[16];
-    for (std::size_t i = 0; i < 16; ++i)
-        pv_f[i] = static_cast<float>(proj_view.data()[i]);
-    glUniformMatrix4fv(proj_view_loc_, 1, GL_TRUE, pv_f);
+    if (!valid())
+        return;
 
-    float view_f[16];
-    for (std::size_t i = 0; i < 16; ++i)
-        view_f[i] = static_cast<float>(view.data()[i]);
-    glUniformMatrix4fv(view_loc_, 1, GL_TRUE, view_f);
+    program_.use();
+    set_mat4(proj_view_loc_, proj_view);
+    set_mat4(view_loc_,      view);
+    set_mat4(model_loc_,     model);
 
     matcap.bind(0);
     glUniform1i(matcap_loc_, 0);

@@ -155,7 +155,7 @@ public:
     void set(const std::vector<Marker>& markers);
     void clear();
 
-    void draw(const Matrix<double>& proj_view) const;
+    void draw(const Matrix<double>& proj_view, const Matrix<double>& model) const;
 
 private:
     ShaderProgram program_;
@@ -278,6 +278,7 @@ public:
     void upload(const geom::RenderMesh& m);
     void draw(const Matrix<double>& proj_view,
               const Matrix<double>& view,
+              const Matrix<double>& model,
               const Texture& matcap) const;
 
 private:
@@ -285,6 +286,7 @@ private:
     Mesh          mesh_;
     int           proj_view_loc_ = -1;
     int           view_loc_      = -1;
+    int           model_loc_      = -1;
     int           matcap_loc_    = -1;
 };
 

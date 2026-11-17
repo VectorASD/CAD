@@ -9,6 +9,7 @@
 #include "vec3.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <initializer_list>
 #include <ostream>
@@ -120,8 +121,28 @@ public:
         return r;
     }
 
+    static Matrix rotation_x(S angle) requires DoubleConvertible<S> {
+        double a = static_cast<double>(angle) * detail::PI_180;
+        double c = std::cos(a), s = std::sin(a);
+        return Matrix({
+            {S(1), S(0),  S(0), S(0)},
+            {S(0), S(c),  S(-s), S(0)},
+            {S(0), S(s),  S(c),  S(0)},
+            {S(0), S(0),  S(0), S(1)},
+        });
+    }
+    static Matrix rotation_y(S angle) requires DoubleConvertible<S> {
+        double a = static_cast<double>(angle) * detail::PI_180;
+        double c = std::cos(a), s = std::sin(a);
+        return Matrix({
+            {S(c),  S(0), S(s),  S(0)},
+            {S(0),  S(1), S(0),  S(0)},
+            {S(-s), S(0), S(c),  S(0)},
+            {S(0),  S(0), S(0),  S(1)},
+        });
+    }
     static Matrix rotation_z(S angle) requires DoubleConvertible<S> {
-        double a = static_cast<double>(angle);
+        double a = static_cast<double>(angle) * detail::PI_180;
         double c = std::cos(a), s = std::sin(a);
         return Matrix({
             {S(c), S(-s), S(0), S(0)},
@@ -129,6 +150,27 @@ public:
             {S(0), S(0),  S(1), S(0)},
             {S(0), S(0),  S(0), S(1)},
         });
+    }
+
+    static Matrix translation(S x, S y, S z) {
+        return Matrix({
+            {S(1), S(0), S(0), x},
+            {S(0), S(1), S(0), y},
+            {S(0), S(0), S(1), z},
+            {S(0), S(0), S(0), S(1)},
+        });
+    }
+
+    static Matrix scale(S x, S y, S z) {
+        return Matrix({
+            {x,    S(0), S(0), S(0)},
+            {S(0), y,    S(0), S(0)},
+            {S(0), S(0), z,    S(0)},
+            {S(0), S(0), S(0), S(1)},
+        });
+    }
+    static Matrix scale(S s) {
+        return scale(s, s, s);
     }
 
     static Matrix perspective(S fovy, S aspect, S near, S far) requires DoubleConvertible<S> {
@@ -282,6 +324,14 @@ public:
             os << " ]";
         }
         return os;
+    }
+
+    // Row-major 16 floats, suitable for glUniformMatrix4fv(..., GL_TRUE, ...)
+    std::array<float, 16> to_floats() const requires DoubleConvertible<S> {
+        std::array<float, 16> out;
+        for (std::size_t i = 0; i < 16; ++i)
+            out[i] = static_cast<float>(data_[i]);
+        return out;
     }
 };
 
