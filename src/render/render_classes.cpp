@@ -173,6 +173,15 @@ void Fbo::attach_cubemap_face(unsigned int cube_tex, int face) {
         std::cerr << "cubemap face " << face << " attach incomplete" << std::endl;
 }
 
+unsigned int Fbo::current() {
+    GLint id = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &id);
+    return static_cast<unsigned int>(id);
+}
+void Fbo::bind_id(unsigned int id) {
+    glBindFramebuffer(GL_FRAMEBUFFER, id);
+}
+
 
 // --- Mesh ---
 
@@ -283,14 +292,17 @@ void main() {
 SpriteRenderer::~SpriteRenderer() { reset(); }
 
 void SpriteRenderer::init() {
-    reset();
+    if (shader_registered_)
+        return;
 
-    program_ = ShaderProgram(kSpriteVertexSrc, kSpriteFragmentSrc);
-    tex_loc_      = program_.uniform_location("uTexture");
-    uv_range_loc_ = program_.uniform_location("uUVRange");
+    if (shared_.refcount++ == 0) {
+        shared_.program = ShaderProgram(kSpriteVertexSrc, kSpriteFragmentSrc);
+        shared_.tex_loc      = shared_.program.uniform_location("uTexture");
+        shared_.uv_range_loc = shared_.program.uniform_location("uUVRange");
+    }
+    shader_registered_ = true;
 
     float vertices[] = {
-        // pos2     uv2
         -1, -1,    0, 0,
          1, -1,    1, 0,
          1,  1,    1, 1,
@@ -298,16 +310,23 @@ void SpriteRenderer::init() {
     };
     unsigned int indices[] = { 0, 1, 2,  0, 2, 3 };
     mesh_.upload(vertices, 4, 4, indices, 6, {
-        {0, 2, 0},   // aPos: 2 components, offset 0
-        {1, 2, 2},   // aUV:  2 components, offset 2 floats
+        {0, 2, 0},
+        {1, 2, 2},
     });
 }
 
 void SpriteRenderer::reset() {
     mesh_.reset();
-    program_.reset();
-    tex_loc_ = -1;
-    uv_range_loc_ = -1;
+
+    if (shader_registered_) {
+        if (--shared_.refcount == 0)
+            shared_.program.reset();
+        shader_registered_ = false;
+    }
+}
+
+bool SpriteRenderer::valid() const {
+    return shader_registered_ && shared_.program.valid() && mesh_.valid();
 }
 
 void SpriteRenderer::draw_tile(unsigned int tex_id,
@@ -320,15 +339,13 @@ void SpriteRenderer::draw_tile(unsigned int tex_id,
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
     {
-        program_.use();
-        glUniform1i(tex_loc_, 0);
-        glUniform4f(uv_range_loc_, u0, v0, u1, v1);
+        shared_.program.use();
+        glUniform1i(shared_.tex_loc, 0);
+        glUniform4f(shared_.uv_range_loc, u0, v0, u1, v1);
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, tex_id);
-        {
-            mesh_.draw();
-        }
+        mesh_.draw();
         glBindTexture(GL_TEXTURE_2D, 0);
     }
     if (was_depth) glEnable(GL_DEPTH_TEST);
@@ -376,21 +393,23 @@ void main() {
 Markers::~Markers() { reset(); }
 
 void Markers::init() {
-    reset();
+    if (shader_registered_) return;
 
-    program_ = ShaderProgram(kMarkerVertexSrc, kMarkerFragmentSrc);
-    proj_view_loc_ = program_.uniform_location("uProjView");
-    model_loc_     = program_.uniform_location("uModel");
-    tint_loc_      = program_.uniform_location("uTint");
+    if (shared_.refcount++ == 0) {
+        shared_.program = ShaderProgram(kMarkerVertexSrc, kMarkerFragmentSrc);
+        shared_.proj_view_loc = shared_.program.uniform_location("uProjView");
+        shared_.model_loc     = shared_.program.uniform_location("uModel");
+        shared_.tint_loc      = shared_.program.uniform_location("uTint");
+    }
+    shader_registered_ = true;
 
     float vertices[] = {
-      // pos (x,y,z)    color (r,g,b)
-         0,  1,  0,     1, 0, 0,
-         1,  0,  0,     0, 1, 0,
-         0,  0,  1,     0, 0, 1,
-        -1,  0,  0,     1, 1, 0,
-         0,  0, -1,     1, 0, 1,
-         0, -1,  0,     0, 1, 1,
+        0,  1,  0,     1, 0, 0,
+        1,  0,  0,     0, 1, 0,
+        0,  0,  1,     0, 0, 1,
+       -1,  0,  0,     1, 1, 0,
+        0,  0, -1,     1, 0, 1,
+        0, -1,  0,     0, 1, 1,
     };
     unsigned int indices[] = {
         0, 2, 1,  0, 3, 2,  0, 4, 3,  0, 1, 4,
@@ -404,13 +423,45 @@ void Markers::init() {
 
 void Markers::reset() {
     mesh_.reset();
-    program_.reset();
-    proj_view_loc_ = -1;
-    model_loc_     = -1;
-    tint_loc_      = -1;
+
+    if (shader_registered_) {
+        if (--shared_.refcount == 0) {
+            shared_.program.reset();
+        }
+        shader_registered_ = false;
+    }
 
     std::lock_guard<std::mutex> lock(mutex_);
     markers_.clear();
+}
+
+bool Markers::valid() const {
+    return shader_registered_ && shared_.program.valid() && mesh_.valid();
+}
+
+void Markers::draw(const Matrix<double>& proj_view,
+                   const Matrix<double>& model) const {
+    if (!valid()) return;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (markers_.empty()) return;
+
+    shared_.program.use();
+    set_mat4(shared_.proj_view_loc, proj_view);
+
+    for (const auto& m : markers_) {
+        const Matrix<double> local =
+            Matrix<double>::translation(m.position.x, m.position.y, m.position.z)
+            * Matrix<double>::scale(m.scale);
+
+        set_mat4(shared_.model_loc, model * local);
+        glUniform3f(shared_.tint_loc,
+                    static_cast<float>(m.tint.x),
+                    static_cast<float>(m.tint.y),
+                    static_cast<float>(m.tint.z));
+
+        mesh_.draw();
+    }
 }
 
 void Markers::set(const std::vector<Marker>& markers) {
@@ -421,32 +472,6 @@ void Markers::set(const std::vector<Marker>& markers) {
 void Markers::clear() {
     std::lock_guard<std::mutex> lock(mutex_);
     markers_.clear();
-}
-
-void Markers::draw(const Matrix<double>& proj_view, const Matrix<double>& model) const {
-    if (!valid())
-        return;
-
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (markers_.empty())
-        return;
-
-    program_.use();
-    set_mat4(proj_view_loc_, proj_view);
-
-    for (const auto& m : markers_) {
-        const Matrix<double> local =
-            Matrix<double>::translation(m.position.x, m.position.y, m.position.z)
-            * Matrix<double>::scale(m.scale);
-
-        set_mat4(model_loc_, model * local);
-        glUniform3f(tint_loc_,
-                    static_cast<float>(m.tint.x),
-                    static_cast<float>(m.tint.y),
-                    static_cast<float>(m.tint.z));
-
-        mesh_.draw();
-    }
 }
 
 
@@ -652,17 +677,17 @@ void main() {
 SkyBox::~SkyBox() { reset(); }
 
 void SkyBox::init() {
-    reset();
+    if (shader_registered_)
+        return;
 
-    program_ = ShaderProgram(kSkyBoxVertexSrc, kSkyBoxFragmentSrc);
-    proj_view_loc_ = program_.uniform_location("uProjViewRot");
-    cube_loc_      = program_.uniform_location("uSkybox");
+    if (shared_.refcount++ == 0) {
+        shared_.program = ShaderProgram(kSkyBoxVertexSrc, kSkyBoxFragmentSrc);
+        shared_.proj_view_loc = shared_.program.uniform_location("uProjViewRot");
+        shared_.cube_loc      = shared_.program.uniform_location("uSkybox");
+    }
+    shader_registered_ = true;
 
-    // Unit cube, CCW when viewed from inside, so GL_CULL_FACE/BACK culls
-    // the far side of the cube; depth is forced to 1.0 in the shader so
-    // only untouched pixels get the skybox
     float vertices[] = {
-        // pos (x,y,z)
         -1, -1, -1,
          1, -1, -1,
          1, -1,  1,
@@ -673,46 +698,49 @@ void SkyBox::init() {
         -1,  1,  1,
     };
     unsigned int indices[] = {
-        0, 2, 1,  0, 3, 2,  // bottom
-        0, 1, 4,  1, 5, 4,  // front
-        1, 2, 5,  2, 6, 5,  // right
-        2, 3, 7,  2, 7, 6,  // back
-        3, 0, 7,  0, 4, 7,  // left
-        4, 5, 7,  5, 6, 7,  // top
+        0, 2, 1,  0, 3, 2,
+        0, 1, 4,  1, 5, 4,
+        1, 2, 5,  2, 6, 5,
+        2, 3, 7,  2, 7, 6,
+        3, 0, 7,  0, 4, 7,
+        4, 5, 7,  5, 6, 7,
     };
     mesh_.upload(vertices, 8, 3, indices, 36, {
-        {0, 3, 0}, // aPos: 3 components, offset 0
+        {0, 3, 0},
     });
 }
 
 void SkyBox::reset() {
     mesh_.reset();
-    program_.reset();
-    proj_view_loc_ = -1;
-    cube_loc_ = -1;
+
+    if (shader_registered_) {
+        if (--shared_.refcount == 0) {
+            shared_.program.reset();
+        }
+        shader_registered_ = false;
+    }
 }
 
-void SkyBox::draw(const Matrix<double>& proj_view_rot, const CubemapTexture& cube) {
+bool SkyBox::valid() const {
+    return shader_registered_ && shared_.program.valid() && mesh_.valid();
+}
+
+void SkyBox::draw(const Matrix<double>& proj_view_rot,
+                  const CubemapTexture& cube) {
     if (!valid() || !cube.valid())
         return;
 
-    // Late-skybox: keep GL_DEPTH_TEST enabled, switch comparator to LEQUAL.
-    // The shader emits gl_Position = pos.xyww, so z_ndc = 1.0 for every
-    // fragment. Depth buffer is cleared to 1.0, so LEQUAL passes only where
-    // no geometry has written yet. Depth writes are harmless (1.0 -> 1.0).
     glDepthFunc(GL_LEQUAL);
     {
-        program_.use();
-        set_mat4(proj_view_loc_, proj_view_rot);
-        glUniform1i(cube_loc_, 0);
+        shared_.program.use();
+        set_mat4(shared_.proj_view_loc, proj_view_rot);
+        glUniform1i(shared_.cube_loc, 0);
 
         cube.bind(0);
-        {
-            mesh_.draw();
-        }
+        mesh_.draw();
         CubemapTexture::unbind();
     }
-    glDepthFunc(GL_LESS); // restore default for the next frame
+    glDepthFunc(GL_LESS);
 }
 
 
@@ -764,21 +792,30 @@ void main() {
 Surfaces::~Surfaces() { reset(); }
 
 void Surfaces::init() {
-    reset();
+    if (shader_registered_) return;
 
-    program_ = ShaderProgram(kSurfaceVertexSrc, kSurfaceFragmentSrc);
-    proj_view_loc_ = program_.uniform_location("uProjView");
-    view_loc_      = program_.uniform_location("uView");
-    model_loc_     = program_.uniform_location("uModel");
-    matcap_loc_    = program_.uniform_location("uMatCap");
+    if (shared_.refcount++ == 0) {
+        shared_.program = ShaderProgram(kSurfaceVertexSrc, kSurfaceFragmentSrc);
+        shared_.proj_view_loc = shared_.program.uniform_location("uProjView");
+        shared_.view_loc      = shared_.program.uniform_location("uView");
+        shared_.model_loc     = shared_.program.uniform_location("uModel");
+        shared_.matcap_loc    = shared_.program.uniform_location("uMatCap");
+    }
+    shader_registered_ = true;
 }
 
 void Surfaces::reset() {
     mesh_.reset();
-    program_.reset();
-    proj_view_loc_ = -1;
-    view_loc_      = -1;
-    matcap_loc_    = -1;
+
+    if (shader_registered_) {
+        if (--shared_.refcount == 0)
+            shared_.program.reset();
+        shader_registered_ = false;
+    }
+}
+
+bool Surfaces::valid() const {
+    return shader_registered_ && shared_.program.valid() && mesh_.valid();
 }
 
 void Surfaces::upload(const geom::RenderMesh& m) {
@@ -787,14 +824,14 @@ void Surfaces::upload(const geom::RenderMesh& m) {
         return;
     }
     mesh_.upload(m.vertices.data(),
-             m.vertices.size() / RenderMesh::floats_per_vertex,
-             RenderMesh::floats_per_vertex,
-             m.indices.data(), m.indices.size(),
-             {
-                 {0, 3, 0},   // position
-                 {1, 3, 3},   // color
-                 {2, 3, 6},   // normal
-             });
+                 m.vertices.size() / RenderMesh::floats_per_vertex,
+                 RenderMesh::floats_per_vertex,
+                 m.indices.data(), m.indices.size(),
+                 {
+                     {0, 3, 0},
+                     {1, 3, 3},
+                     {2, 3, 6},
+                 });
 }
 
 void Surfaces::draw(const Matrix<double>& proj_view,
@@ -804,13 +841,13 @@ void Surfaces::draw(const Matrix<double>& proj_view,
     if (!valid())
         return;
 
-    program_.use();
-    set_mat4(proj_view_loc_, proj_view);
-    set_mat4(view_loc_,      view);
-    set_mat4(model_loc_,     model);
+    shared_.program.use();
+    set_mat4(shared_.proj_view_loc, proj_view);
+    set_mat4(shared_.view_loc,      view);
+    set_mat4(shared_.model_loc,     model);
 
     matcap.bind(0);
-    glUniform1i(matcap_loc_, 0);
+    glUniform1i(shared_.matcap_loc, 0);
 
     mesh_.draw();
 }

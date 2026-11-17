@@ -42,6 +42,7 @@ constexpr std::uint16_t SC_BACKSPACE = 0xFF08;
 
 
 void init();
+void init_scene();
 void shutdown();
 
 void handle_mouse(MouseEvent ev, int32_t x, int32_t y);

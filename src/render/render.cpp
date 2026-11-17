@@ -10,6 +10,7 @@
 #include "camera.hpp"
 #include "matrix.hpp"
 #include "render_classes.hpp"
+#include "render_hierarchy.hpp"
 
 #include <glad/glad.h>
 #include <GL/osmesa.h>
@@ -21,6 +22,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -50,17 +52,11 @@ DragState drag_;
 OSMesaContext ctx = nullptr;
 unsigned char* osmesa_buffer = nullptr;
 
-Fbo      g_fbo;
-Markers  g_markers;
-Markers  g_markers2;
-Surfaces g_surfaces;
-Surfaces g_surfaces_teapot;
-Texture  g_matcap;
-SkyBox   g_skybox;
-std::vector<CubemapTexture> g_skybox_textures;
-std::atomic<int>            g_skybox_current{0};
+std::unique_ptr<Node> g_scene;
+FboNode*    g_root_fbo = nullptr;
 
-int g_width = DEFAULT_WIDTH, g_height = DEFAULT_HEIGHT;
+int g_width  = DEFAULT_WIDTH;
+int g_height = DEFAULT_HEIGHT;
 
 std::vector<std::uint8_t> pixels(DEFAULT_WIDTH * DEFAULT_HEIGHT * 4);
 std::vector<std::uint8_t> flipped(DEFAULT_WIDTH * DEFAULT_HEIGHT * 4);
@@ -107,105 +103,125 @@ void init() {
     pixels.resize(g_width * g_height * 4);
     flipped.resize(g_width * g_height * 4);
 
-    g_fbo = Fbo(g_width, g_height);
+    init_scene();
+}
+
+void init_scene() {
+    auto root = std::make_unique<FboNode>(g_width, g_height);
+    g_root_fbo = root.get();
+
+    // Matcap goes first so SurfacesNode sees a valid Texture* by the
+    // time its do_draw runs (init happens in insertion order).
+    auto matcap_node = std::make_unique<TextureNode>(
+        "assets/matcaps/17395A_7EBCC7_4D8B9F_65A1B5.png", GL_LINEAR);
+    const Texture* matcap_ptr = &matcap_node->get();
+    root->add(std::move(matcap_node));
 
     using S = Fraction<int>;
     using V = Vec3<S>;
-    {
-        std::vector<Marker> markers;
 
-        // --- 33 points on a cubic Bezier curve (degree 3) in 3D ---
-        const std::array<V, 4> curve_ctrl = {
+    // 1. Curve markers, identity transform
+    {
+        const std::array<V, 4> ctrl = {
             V(S(-1), S( 0), S(-1)),
             V(S(-1), S( 1), S( 1)),
             V(S( 1), S(-1), S(-1)),
             V(S( 1), S( 0), S( 1)),
         };
+        std::vector<Marker> pts;
         for (int i = 0; i <= 32; ++i) {
             const S t(i, 32);
-            const V p = bezier<3>(curve_ctrl, t);
+            const V p = bezier<3>(ctrl, t);
             const double td = static_cast<double>(t);
-            markers.push_back({
-                .position = to_double(p),
-                .tint     = {1.0 - td, td, 0.0},
-                .scale    = 0.05,
-            });
+            pts.push_back({ .position = to_double(p), .tint = {1.0 - td, td, 0.0}, .scale = 0.05 });
         }
-        g_markers.init();
-        g_markers.set(markers);
+        auto m = std::make_unique<Markers>();
+        m->set(pts);
+        root->add(std::make_unique<MarkersNode>(std::move(m)));
     }
-    {
-        std::vector<Marker> markers;
 
-        // --- 4x4 control points of the Bezier surface ---
+    // 2. Sample Bezier surface + its control markers, both under surf_mat
+    static const Matrix<double> surf_mat =
+        Matrix<double>::translation(1.5, 0, -1.5);
+    {
         BezierSurface<3, 3, S>::Grid grid = {{
             {{V(S(0), S(0), S(0)), V(S(1), S(0), S(0)), V(S(2), S(0), S(0)), V(S(3), S(0), S(0))}},
             {{V(S(0), S(0), S(1)), V(S(1), S(2), S(1)), V(S(2), S(2), S(1)), V(S(3), S(0), S(1))}},
             {{V(S(0), S(0), S(2)), V(S(1), S(2), S(2)), V(S(2), S(2), S(2)), V(S(3), S(0), S(2))}},
             {{V(S(0), S(0), S(3)), V(S(1), S(0), S(3)), V(S(2), S(0), S(3)), V(S(3), S(-2), S(3))}},
         }};
-        for (const auto& row : grid) {
-            for (const auto& p : row) {
-                markers.push_back({
-                    .position = to_double(p),
-                    .tint     = {1.0, 1.0, 0.0},   // yellow
-                    .scale    = 0.08,               // slightly larger than curve points
-                });
-            }
-        }
+
+        std::vector<Marker> pts;
+        for (const auto& row : grid)
+            for (const auto& p : row)
+                pts.push_back({ .position = to_double(p), .tint = {1.0, 1.0, 0.0}, .scale = 0.08 });
+
+        auto markers_t = std::make_unique<TransformNode>();
+        markers_t->set_local(surf_mat);
+        auto m = std::make_unique<Markers>();
+        m->set(pts);
+        markers_t->add(std::make_unique<MarkersNode>(std::move(m)));
+        root->add(std::move(markers_t));
 
         BezierSurface<3, 3, S> surface(grid);
+        auto s = std::make_unique<SurfacesNode>(
+            std::make_unique<Surfaces>(),
+            std::make_unique<geom::RenderMesh>(surface.tessellate(20, 20)));
+        s->set_matcap(matcap_ptr);
 
-        g_markers2.init();
-        g_markers2.set(markers);
-        g_surfaces.init();
-        g_surfaces.upload(surface.tessellate(20, 20));
+        auto surf_t = std::make_unique<TransformNode>();
+        surf_t->set_local(surf_mat);
+        surf_t->add(std::move(s));
+        root->add(std::move(surf_t));
     }
+
+    // 3. Teapot with separated transforms and tag
     {
-        auto model = geom::load_bpt("assets/models/teapotCGA.bpt", true);
+        Model model = geom::load_bpt("assets/models/teapotCGA.bpt", true);
         if (!model.patches.empty()) {
-            g_surfaces_teapot.init();
-            g_surfaces_teapot.upload(geom::tessellate_model(model, 8, 8));
+            auto surf = std::make_unique<SurfacesNode>(
+                std::make_unique<Surfaces>(),
+                std::make_unique<geom::RenderMesh>(
+                    geom::tessellate_model(model, 8, 8)));
+            surf->set_matcap(matcap_ptr);
+
+            // 1. Fix initial orientation (bottom from -Z to -Y)
+            auto fix_x_node = std::make_unique<TransformNode>();
+            fix_x_node->set_local(Matrix<double>::rotation_x(-90));
+            fix_x_node->add(std::move(surf));
+
+            // 2. Spin in place (this node gets the tag for animation)
+            auto spin_y_node = std::make_unique<TransformNode>();
+            spin_y_node->set_local(Matrix<double>::rotation_y(0));
+            spin_y_node->set_tag("teapot_spin");
+            spin_y_node->add(std::move(fix_x_node));
+
+            // 3. Move to final world position
+            auto translate_node = std::make_unique<TransformNode>();
+            translate_node->set_local(Matrix<double>::translation(8, 0, 0));
+            translate_node->add(std::move(spin_y_node));
+
+            root->add(std::move(translate_node));
         }
     }
 
-    if (!g_matcap.load_from_file("assets/matcaps/17395A_7EBCC7_4D8B9F_65A1B5.png", GL_LINEAR)) {
-        std::cerr << "matcap not loaded, using gray fallback" << std::endl;
-        const std::uint8_t gray[4] = {180, 180, 180, 255};
-        g_matcap.create(1, 1, GL_NEAREST, gray);
-    }
-
-    std::string SCRIPT_DIR = "/home/vectorasd/CAD/";
+    // 4. Skybox (last: LEQUAL trick needs untouched depth buffer)
     {
-        const int space_faces[] = { 4, 6, 3, 11, 5, 7 };
-        CubemapTexture space;
-        if (space.load_from_atlas(SCRIPT_DIR + "assets/skybox_space.webp", 4, 3, space_faces))
-            g_skybox_textures.push_back(std::move(space));
-
-        const int labeled_faces[] = { 0, 1, 2, 3, 4, 5 };
-        CubemapTexture labeled;
-        if (labeled.load_from_atlas(SCRIPT_DIR + "assets/skybox_labeled.png", 1, 6, labeled_faces))
-            g_skybox_textures.push_back(std::move(labeled));
+        auto sb = std::make_unique<SkyBoxNode>(std::make_unique<SkyBox>());
+        sb->add_atlas("assets/skybox_space.webp",  4, 3, {4, 6, 3, 11, 5, 7});
+        sb->add_atlas("assets/skybox_labeled.png", 1, 6, {0, 1, 2, 3, 4, 5});
+        root->add(std::move(sb));
     }
-    g_skybox.init();
+
+    g_scene = std::move(root);
+    g_scene->recalc(Matrix<double>::identity(4)); // initial flush before first draw
 
     camera.set_aspect(static_cast<double>(g_width) / g_height);
 }
 
 void shutdown() {
-    // Destroy GL objects while the OSMesa context is still current.
-    g_skybox.reset();
-    for (CubemapTexture& skybox : g_skybox_textures)
-        skybox.reset();
-    g_skybox_textures.clear();
-    g_skybox_current.store(0);
-
-    g_markers.reset();
-    g_markers2.reset();
-    g_surfaces.reset();
-    g_surfaces_teapot.reset();
-    g_matcap.reset();
-    g_fbo.reset();
+    g_scene.reset(); // recursive reset + destructors; still in GL context
+    g_root_fbo = nullptr;
 
     if (ctx)
         OSMesaDestroyContext(ctx);
@@ -274,11 +290,8 @@ void apply_camera_input(double td) {
     }
     if (key_state['q']) {
         key_state['q'] = false;
-        const int n = static_cast<int>(g_skybox_textures.size());
-        if (n) {
-            int next = (g_skybox_current.load() + 1) % n;
-            g_skybox_current.store(next);
-        }
+        if (g_scene)
+            g_scene->visit<SkyBoxNode>([](SkyBoxNode& sb) { sb.cycle(); });
     }
 
     double ax_fwd = 0.0, ax_right = 0.0, ax_up = 0.0;
@@ -321,51 +334,31 @@ const std::uint8_t* render_frame() {
     if (pw > 0 && ph > 0 && (pw != g_width || ph != g_height)) {
         g_width  = pw;
         g_height = ph;
-
-        g_fbo = Fbo(g_width, g_height);
+        if (g_root_fbo) g_root_fbo->resize(g_width, g_height);
         pixels.resize(g_width * g_height * 4);
         flipped.resize(g_width * g_height * 4);
         camera.set_aspect(static_cast<double>(g_width) / g_height);
     }
-
 
     const auto now = std::chrono::steady_clock::now();
     double td = std::chrono::duration<double>(now - last_frame_tp).count();
     last_frame_tp = now;
     if (td > 0.1) td = 0.1;
 
+    // Animate tagged transform nodes
+    static double teapot_angle = 0.0;
+    teapot_angle = std::fmod(teapot_angle + td * -30.0, 360.0);
+    if (g_scene)
+        if (auto* teapot_spin = g_scene->find_by_tag<TransformNode>("teapot_spin"))
+            teapot_spin->set_local(Matrix<double>::rotation_y(teapot_angle));
+
     apply_camera_input(td);
 
-
-    g_fbo.bind();
-    glViewport(0, 0, g_fbo.width(), g_fbo.height());
-    glClearColor(0.f, 0.f, 0.f, 1.f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-    // Opaque geometry first
-    static const Matrix<double> I = Matrix<double>::identity(4);
-    static const Matrix<double> surf_mat = Matrix<double>::translation(1.5, 0, -1.5);
-    static const Matrix<double> teapot_mat =
-        Matrix<double>::rotation_x(-90) * Matrix<double>::translation(8, 0, 0);
-
-    g_markers.draw(camera.proj_view(), I);
-    g_markers2.draw(camera.proj_view(), surf_mat);
-    g_surfaces.draw(camera.proj_view(), camera.view(), surf_mat, g_matcap);
-    g_surfaces_teapot.draw(camera.proj_view(), camera.view(), teapot_mat, g_matcap);
-
-    // Skybox last: GL_LEQUAL + z=w means it fills only untouched pixels
-    const int skybox_idx = g_skybox_current.load();
-    if (skybox_idx >= 0 && skybox_idx < static_cast<int>(g_skybox_textures.size())) {
-        Matrix<double> view_rot = camera.view();
-        view_rot(0, 3) = 0.0;
-        view_rot(1, 3) = 0.0;
-        view_rot(2, 3) = 0.0;
-        const Matrix<double> proj_view_rot = camera.proj() * view_rot;
-        g_skybox.draw(proj_view_rot, g_skybox_textures[skybox_idx]);
+    if (g_scene) {
+        RenderContext rctx{camera.proj(), camera.view(), camera.proj_view()};
+        g_scene->draw(rctx);
     }
-
-    glReadPixels(0, 0, g_width, g_height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
-
+    if (g_root_fbo) g_root_fbo->read_pixels(pixels.data());
 
     for (int y = 0; y < g_height; ++y) {
         std::memcpy(&flipped[y * g_width * 4],

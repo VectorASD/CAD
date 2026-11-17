@@ -49,8 +49,8 @@ private:
 
 
 enum class FboKind {
-    ColorDepth,   // owns color texture + depth renderbuffer (default)
-    Empty,        // no attachments; caller attaches via attach_cubemap_face etc.
+    ColorDepth, // owns color texture + depth renderbuffer (default)
+    Empty,      // no attachments; caller attaches via attach_cubemap_face etc.
 };
 
 class Fbo {
@@ -74,6 +74,10 @@ public:
     // Attach a face of a cubemap as the color attachment of this framebuffer.
     // face: 0=+X, 1=-X, 2=+Y, 3=-Y, 4=+Z, 5=-Z. Requires a current GL context.
     void attach_cubemap_face(unsigned int cube_tex, int face);
+
+    unsigned int color_texture() const { return color_tex_; }
+    static unsigned int current();
+    static void bind_id(unsigned int id);
 
 private:
     unsigned int fbo_ = 0;
@@ -116,29 +120,32 @@ class SpriteRenderer {
 public:
     SpriteRenderer() = default;
     ~SpriteRenderer();
+
     SpriteRenderer(const SpriteRenderer&) = delete;
     SpriteRenderer& operator=(const SpriteRenderer&) = delete;
 
-    void init();   // requires a current GL context
+    void init();
     void reset();
-    bool valid() const { return program_.valid() && mesh_.valid(); }
+    bool valid() const;
 
-    // Draws a full-viewport quad, sampling the rectangle [u0,v0]-[u1,v1] of
-    // the given 2D texture. Saves/restores GL_DEPTH_TEST and GL_CULL_FACE.
-    // The viewport must already be set by the caller.
-    void draw_tile(unsigned int tex_id, float u0, float v0, float u1, float v1);
+    void draw_tile(unsigned int tex_id,
+                   float u0, float v0, float u1, float v1);
 
 private:
-    ShaderProgram program_;
-    Mesh          mesh_;
-    int           tex_loc_ = -1;
-    int           uv_range_loc_ = -1;
+    struct Shared {
+        ShaderProgram program;
+        int tex_loc;
+        int uv_range_loc;
+        int refcount;
+        Shared() : tex_loc(-1), uv_range_loc(-1), refcount(0) {}
+    };
+    inline static Shared shared_;
+    bool shader_registered_ = false;
+
+    Mesh mesh_;
 };
 
 
-// Owns everything needed to draw the marker instances: the octahedron
-// template mesh, the per-marker shader, and the marker list itself.
-// Thread-safe: `set`/`clear`/`draw` take an internal mutex.
 class Markers {
 public:
     Markers() = default;
@@ -147,24 +154,31 @@ public:
     Markers(const Markers&) = delete;
     Markers& operator=(const Markers&) = delete;
 
-    void init();   // requires a current GL context
+    void init();
     void reset();
-
-    bool valid() const { return program_.valid() && mesh_.valid(); }
+    bool valid() const;
 
     void set(const std::vector<Marker>& markers);
     void clear();
 
-    void draw(const Matrix<double>& proj_view, const Matrix<double>& model) const;
+    void draw(const Matrix<double>& proj_view,
+              const Matrix<double>& model) const;
 
 private:
-    ShaderProgram program_;
-    Mesh          mesh_;
-    int           proj_view_loc_ = -1;
-    int           model_loc_     = -1;
-    int           tint_loc_      = -1;
+    struct Shared {
+        ShaderProgram program;
+        int proj_view_loc;
+        int model_loc;
+        int tint_loc;
+        int refcount;
+        Shared()
+            : proj_view_loc(-1), model_loc(-1), tint_loc(-1), refcount(0) {}
+    };
+    inline static Shared shared_;
+    bool shader_registered_ = false;
 
-    mutable std::mutex  mutex_;
+    Mesh mesh_;
+    mutable std::mutex mutex_;
     std::vector<Marker> markers_;
 };
 
@@ -238,24 +252,29 @@ class SkyBox {
 public:
     SkyBox() = default;
     ~SkyBox();
+
     SkyBox(const SkyBox&) = delete;
     SkyBox& operator=(const SkyBox&) = delete;
 
-    void init();   // requires a current GL context
+    void init();
     void reset();
+    bool valid() const;
 
-    bool valid() const { return program_.valid() && mesh_.valid(); }
-
-    // Draw the skybox behind everything. `view_rot` must be the view
-    // matrix with translation stripped (only rotation/scale), so the
-    // skybox does not move with the camera.
-    void draw(const Matrix<double>& proj_view_rot, const CubemapTexture& cube);
+    void draw(const Matrix<double>& proj_view_rot,
+              const CubemapTexture& cube);
 
 private:
-    ShaderProgram program_;
-    Mesh          mesh_;
-    int           proj_view_loc_ = -1;
-    int           cube_loc_ = -1;
+    struct Shared {
+        ShaderProgram program;
+        int proj_view_loc;
+        int cube_loc;
+        int refcount;
+        Shared() : proj_view_loc(-1), cube_loc(-1), refcount(0) {}
+    };
+    inline static Shared shared_;
+    bool shader_registered_ = false;
+
+    Mesh mesh_;
 };
 
 
@@ -270,10 +289,9 @@ public:
     Surfaces(const Surfaces&) = delete;
     Surfaces& operator=(const Surfaces&) = delete;
 
-    void init();   // requires a current GL context
+    void init();
     void reset();
-
-    bool valid() const { return program_.valid() && mesh_.valid(); }
+    bool valid() const;
 
     void upload(const geom::RenderMesh& m);
     void draw(const Matrix<double>& proj_view,
@@ -282,12 +300,21 @@ public:
               const Texture& matcap) const;
 
 private:
-    ShaderProgram program_;
-    Mesh          mesh_;
-    int           proj_view_loc_ = -1;
-    int           view_loc_      = -1;
-    int           model_loc_      = -1;
-    int           matcap_loc_    = -1;
+    struct Shared {
+        ShaderProgram program;
+        int proj_view_loc;
+        int view_loc;
+        int model_loc;
+        int matcap_loc;
+        int refcount;
+        Shared()
+            : proj_view_loc(-1), view_loc(-1), model_loc(-1),
+              matcap_loc(-1), refcount(0) {}
+    };
+    inline static Shared shared_;
+    bool shader_registered_ = false;
+
+    Mesh mesh_;
 };
 
 } // namespace geom::render
