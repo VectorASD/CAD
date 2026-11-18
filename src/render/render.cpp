@@ -6,11 +6,14 @@
 #include "fraction.hpp"
 
 // render
-#include "bpt.hpp"
 #include "camera.hpp"
 #include "matrix.hpp"
 #include "render_classes.hpp"
 #include "render_hierarchy.hpp"
+
+// files
+#include "bpt.hpp"
+#include "step/token_stream.hpp"
 
 #include <glad/glad.h>
 #include <GL/osmesa.h>
@@ -215,6 +218,8 @@ void init_scene() {
         root->add(std::move(sb));
     }
 
+    step::step_dump("assets/models/DSA 1.5u.step");
+
     g_scene = std::move(root);
     g_scene->recalc(Matrix<double>::identity(4)); // initial flush before first draw
 
@@ -314,7 +319,8 @@ void apply_camera_input(double td) {
     if (key_state[' ']) ax_up += 1.0;
     if (ctrl)           ax_up -= 1.0;
 
-    if (ax_fwd == 0.0 && ax_right == 0.0 && ax_up == 0.0) return;
+    if (ax_fwd == 0.0 && ax_right == 0.0 && ax_up == 0.0)
+        return;
 
     const Vec3<double> world_up{0.0, 1.0, 0.0};
     const Vec3<double> dir =
@@ -323,10 +329,12 @@ void apply_camera_input(double td) {
         + world_up         * ax_up;
 
     const double len = std::sqrt(dir.x*dir.x + dir.y*dir.y + dir.z*dir.z);
-    if (len < 1e-12) return;
+    if (len < 1e-12)
+        return;
 
-    const double speed  = MOVE_SPEED * (shift ? SPRINT_MULT : 1.0);
-    const double dist   = speed * td;
+    const double speed = MOVE_SPEED * (shift ? SPRINT_MULT : 1.0);
+    const double dist  = speed * td;
+
     const Vec3<double> d = dir * (dist / len);
 
     camera.move_forward(d.dot(camera.forward()));
@@ -371,13 +379,13 @@ const std::uint8_t* render_frame() {
         RenderContext rctx { camera.proj(), camera.view(), camera.proj_view(), g_wireframe };
         g_scene->draw(rctx);
     }
-    if (g_root_fbo) g_root_fbo->read_pixels(pixels.data());
+    if (g_root_fbo)
+        g_root_fbo->read_pixels(pixels.data());
 
-    for (int y = 0; y < g_height; ++y) {
+    for (int y = 0; y < g_height; ++y)
         std::memcpy(&flipped[y * g_width * 4],
                     &pixels[(g_height - 1 - y) * g_width * 4],
                     g_width * 4);
-    }
     return flipped.data();
 }
 

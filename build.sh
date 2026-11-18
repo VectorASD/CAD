@@ -164,6 +164,8 @@ compile render/render_classes
 compile render/stream
 compile image_loader
 compile bpt
+compile step/lexer
+compile step/step_dump
 
 echo "  CC   render/glad.c"
 "${CC_C[@]}" -I"$INCLUDE" -O3 -g -Wall \
@@ -178,6 +180,8 @@ echo "  LD   graphics_server"
     "$OBJ/render/glad.o" \
     "$OBJ/image_loader.o" \
     "$OBJ/bpt.o" \
+    "$OBJ/step/lexer.o" \
+    "$OBJ/step/step_dump.o" \
     -lOSMesa -lavcodec -lavutil -lswscale -lpthread
 
 echo "  STRIP graphics_server"
@@ -202,4 +206,6 @@ echo "Runned!"
 
 : << COMMENT
 git --no-pager diff --staged -- '*.cpp' '*.hpp' '*.py' '*.pyw' '*.sh'
+git diff -- ':(exclude)*.step'
+git diff -- ':!*.step'
 COMMENT
